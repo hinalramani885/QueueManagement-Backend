@@ -30,7 +30,7 @@ public class StompJwtChannelInterceptor implements ChannelInterceptor {
     public Message<?> preSend(Message<?> message, MessageChannel channel) {
         StompHeaderAccessor accessor = MessageHeaderAccessor.getAccessor(message, StompHeaderAccessor.class);
 
-        if (StompCommand.CONNECT.equals(accessor.getCommand())) {
+        if (accessor != null && StompCommand.CONNECT.equals(accessor.getCommand())) {
             try {
                 List<String> authHeaders = accessor.getNativeHeader("Authorization");
                 if (authHeaders == null || authHeaders.isEmpty()) {
@@ -59,7 +59,7 @@ public class StompJwtChannelInterceptor implements ChannelInterceptor {
                 log.info("STOMP CONNECT authenticated for: {} (userId: {})", email, userId);
             } catch (Exception e) {
                 log.error("WebSocket authentication failed: {}", e.getMessage());
-                throw new AuthenticationCredentialsNotFoundException("WebSocket authentication failed", e);
+                throw new AuthenticationCredentialsNotFoundException("WebSocket authentication failed: invalid or expired token", e);
             }
         }
 

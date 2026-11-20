@@ -145,21 +145,38 @@ class PaymentServiceTest {
 
     // ================= CONFIRM PAYMENT =================
 
-    @Test
-    void confirmPaymentSuccess() {
-        String orderId = "order123";
-        String paymentId = "pay123";
-        Payment payment = Payment.builder()
+    /** Signature exactly as Razorpay checkout computes it with the "test_secret" key secret. */
+    private static String razorpaySignature(String orderId, String paymentId) throws Exception {
+        javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+        mac.init(new javax.crypto.spec.SecretKeySpec("test_secret".getBytes(java.nio.charset.StandardCharsets.UTF_8), "HmacSHA256"));
+        return java.util.HexFormat.of().formatHex(
+                mac.doFinal((orderId + "|" + paymentId).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+    }
+
+    private Payment unpaidAdminPayment(String orderId) {
+        return Payment.builder()
                 .razorpayOrderId(orderId)
+                .role(Role.ADMIN)
+                .tokenType("1_MONTH")
+                .createdForEmail("admin@test.com")
+                .amount(10000)
                 .isPaid(false)
                 .build();
+    }
+
+    @Test
+    void confirmPaymentSuccess() throws Exception {
+        String orderId = "order123";
+        String paymentId = "pay123";
+        Payment payment = unpaidAdminPayment(orderId);
 
         when(paymentRepository.findByRazorpayOrderId(orderId)).thenReturn(Optional.of(payment));
         when(paymentRepository.save(any(Payment.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        String result = paymentService.confirmPayment(orderId, paymentId);
+        Payment result = paymentService.confirmPayment(orderId, paymentId,
+                razorpaySignature(orderId, paymentId), Role.ADMIN, "1_MONTH", "admin@test.com");
 
-        assertEquals("Payment confirmed", result);
+        assertSame(payment, result);
         assertTrue(payment.isPaid());
         assertEquals(paymentId, payment.getRazorpayPaymentId());
         verify(paymentRepository).save(payment);
@@ -171,8 +188,44 @@ class PaymentServiceTest {
         when(paymentRepository.findByRazorpayOrderId(orderId)).thenReturn(Optional.empty());
 
         RuntimeException exception = assertThrows(RuntimeException.class,
-                () -> paymentService.confirmPayment(orderId, "pay123"));
+                () -> paymentService.confirmPayment(orderId, "pay123", "sig", Role.ADMIN, "1_MONTH", null));
         assertEquals("Payment not found", exception.getMessage());
+    }
+
+    @Test
+    void confirmPaymentRejectsInvalidSignature() {
+        String orderId = "order123";
+        when(paymentRepository.findByRazorpayOrderId(orderId)).thenReturn(Optional.of(unpaidAdminPayment(orderId)));
+
+        assertThrows(IllegalArgumentException.class,
+                () -> paymentService.confirmPayment(orderId, "pay123", "forged-signature", Role.ADMIN, "1_MONTH", null));
+        verify(paymentRepository, never()).save(any());
+    }
+
+    @Test
+    void confirmPaymentRejectsAlreadyPaidOrder() throws Exception {
+        String orderId = "order123";
+        Payment payment = unpaidAdminPayment(orderId);
+        payment.setPaid(true);
+        when(paymentRepository.findByRazorpayOrderId(orderId)).thenReturn(Optional.of(payment));
+
+        assertThrows(IllegalStateException.class,
+                () -> paymentService.confirmPayment(orderId, "pay123",
+                        razorpaySignature(orderId, "pay123"), Role.ADMIN, "1_MONTH", null));
+        verify(paymentRepository, never()).save(any());
+    }
+
+    @Test
+    void confirmPaymentRejectsDifferentPlanOrRole() throws Exception {
+        String orderId = "order123";
+        when(paymentRepository.findByRazorpayOrderId(orderId)).thenReturn(Optional.of(unpaidAdminPayment(orderId)));
+        String signature = razorpaySignature(orderId, "pay123");
+
+        assertThrows(IllegalArgumentException.class,
+                () -> paymentService.confirmPayment(orderId, "pay123", signature, Role.ADMIN, "LIFETIME", null));
+        assertThrows(IllegalArgumentException.class,
+                () -> paymentService.confirmPayment(orderId, "pay123", signature, Role.PROVIDER, "1_MONTH", null));
+        verify(paymentRepository, never()).save(any());
     }
 
     // ================= GENERATE TOKEN =================

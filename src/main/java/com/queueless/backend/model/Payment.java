@@ -24,6 +24,7 @@ public class Payment {
     private boolean isPaid;
     private String createdForEmail;
     private Role role;
+    private String tokenType; // 1_MONTH, 1_YEAR or LIFETIME – the plan that was actually paid for
     private LocalDateTime createdAt;
     private String createdByAdminId; // For provider tokens: which admin purchased this token
 }

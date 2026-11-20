@@ -14,8 +14,18 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.Map;
 
+/**
+ * Authenticates requests carrying a "Bearer" JWT.
+ * <p>
+ * An invalid or expired token does not abort the request: the request simply continues
+ * unauthenticated, so public endpoints keep working for users with a stale token, while
+ * protected endpoints are rejected by {@link JwtAuthenticationEntryPoint}, which reports
+ * the reason stored in {@link #JWT_ERROR_ATTRIBUTE}.
+ */
 @Slf4j
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
+
+    public static final String JWT_ERROR_ATTRIBUTE = "jwt.error";
 
     private final JwtTokenProvider jwtProvider;
 
@@ -28,12 +38,11 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
 
-        try {
-            String authHeader = request.getHeader("Authorization");
+        String authHeader = request.getHeader("Authorization");
 
-            if (authHeader != null && authHeader.startsWith("Bearer ")) {
-                String token = authHeader.substring(7);
-
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            String token = authHeader.substring(7);
+            try {
                 if (jwtProvider.validateToken(token)) {
                     String userId = jwtProvider.getUserIdFromToken(token);
                     String email = jwtProvider.getEmailFromToken(token);
@@ -41,21 +50,21 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
                     UsernamePasswordAuthenticationToken authentication =
                             new UsernamePasswordAuthenticationToken(userId, null, authorities);
-
-                    // Store additional details using Map.of (Java 9+)
                     authentication.setDetails(Map.of(
                             "userId", userId,
-                            "email", email
+                            "email", email == null ? "" : email
                     ));
 
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                     log.debug("Authenticated user: {} ({})", email, userId);
+                } else {
+                    request.setAttribute(JWT_ERROR_ATTRIBUTE, "Invalid JWT token");
                 }
+            } catch (Exception e) {
+                log.debug("JWT rejected for {}: {}", request.getRequestURI(), e.getMessage());
+                SecurityContextHolder.clearContext();
+                request.setAttribute(JWT_ERROR_ATTRIBUTE, e.getMessage());
             }
-        } catch (Exception e) {
-            log.error("Cannot set user authentication: {}", e.getMessage());
-            response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Invalid or expired token");
-            return; // Stop further processing
         }
 
         filterChain.doFilter(request, response);
