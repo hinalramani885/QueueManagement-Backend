@@ -1,5 +1,6 @@
 package com.queueless.backend.service;
 
+import com.queueless.backend.exception.ResourceNotFoundException;
 import com.queueless.backend.model.Payment;
 import com.queueless.backend.enums.Role;
 import com.queueless.backend.model.Token;
@@ -14,8 +15,14 @@ import org.json.JSONObject;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
+import java.util.HexFormat;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -97,6 +104,7 @@ public class PaymentService {
                     .amount(amount)
                     .createdForEmail(email)
                     .role(role)
+                    .tokenType(tokenType)
                     .isPaid(false)
                     .createdAt(LocalDateTime.now())
                     .createdByAdminId(role == Role.PROVIDER ? adminId : null)
@@ -113,14 +121,41 @@ public class PaymentService {
         }
     }
 
-    public String confirmPayment(String orderId, String paymentId) {
+    /**
+     * Confirms a Razorpay payment. The checkout signature is verified with the key secret, the order
+     * must not have been redeemed already, and it must match the role / plan / email that was paid for.
+     * Without these checks anyone could mint ADMIN or PROVIDER registration tokens without paying.
+     *
+     * @return the confirmed payment (callers use it to generate exactly one token for the paid plan)
+     */
+    public Payment confirmPayment(String orderId, String paymentId, String signature,
+                                  Role expectedRole, String tokenType, String email) {
         log.info("Confirming payment | orderId={}, paymentId={}", orderId, paymentId);
 
         Payment payment = paymentRepository.findByRazorpayOrderId(orderId)
                 .orElseThrow(() -> {
                     log.error("Payment not found for orderId={}", orderId);
-                    return new RuntimeException("Payment not found");
+                    return new ResourceNotFoundException("Payment not found");
                 });
+
+        if (payment.isPaid()) {
+            log.warn("Rejecting re-confirmation of already paid order | orderId={}", orderId);
+            throw new IllegalStateException("Payment has already been confirmed");
+        }
+        if (!isValidSignature(orderId, paymentId, signature)) {
+            log.warn("Invalid Razorpay signature | orderId={}, paymentId={}", orderId, paymentId);
+            throw new IllegalArgumentException("Payment verification failed");
+        }
+        if (expectedRole != null && payment.getRole() != expectedRole) {
+            throw new IllegalArgumentException("Payment was not made for this role");
+        }
+        if (payment.getTokenType() != null && !payment.getTokenType().equals(tokenType)) {
+            throw new IllegalArgumentException("Token type does not match the purchased plan");
+        }
+        if (email != null && payment.getCreatedForEmail() != null
+                && !payment.getCreatedForEmail().equalsIgnoreCase(email)) {
+            throw new IllegalArgumentException("Email does not match the purchased order");
+        }
 
         payment.setRazorpayPaymentId(paymentId);
         payment.setPaid(true);
@@ -139,7 +174,36 @@ public class PaymentService {
         auditLogService.logEvent("PAYMENT_COMPLETED",
                 "Payment completed for " + (payment.getRole() != null ? payment.getRole() : "UNKNOWN"),
                 details);
-        return "Payment confirmed";
+        return payment;
+    }
+
+    /** Price in paise of a single ADMIN/PROVIDER token for the given plan (same prices used by createOrder). */
+    public static int priceFor(String tokenType) {
+        return switch (tokenType) {
+            case "1_MONTH" -> 10000;
+            case "1_YEAR" -> 50000;
+            case "LIFETIME" -> 100000;
+            default -> throw new IllegalArgumentException("Invalid token type");
+        };
+    }
+
+    /** Razorpay checkout signature = hex(HMAC_SHA256(orderId + "|" + paymentId, keySecret)). */
+    boolean isValidSignature(String orderId, String paymentId, String signature) {
+        if (signature == null || signature.isBlank() || RAZORPAY_SECRET == null || RAZORPAY_SECRET.isBlank()) {
+            return false;
+        }
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(RAZORPAY_SECRET.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            byte[] digest = mac.doFinal((orderId + "|" + paymentId).getBytes(StandardCharsets.UTF_8));
+            String expected = HexFormat.of().formatHex(digest);
+            return MessageDigest.isEqual(
+                    expected.getBytes(StandardCharsets.UTF_8),
+                    signature.trim().toLowerCase().getBytes(StandardCharsets.UTF_8));
+        } catch (GeneralSecurityException e) {
+            log.error("Unable to verify Razorpay signature", e);
+            return false;
+        }
     }
 
     public Token generateToken(String email, String tokenType, Role role, boolean isProviderToken, String adminId) {

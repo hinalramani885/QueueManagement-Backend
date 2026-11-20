@@ -1,6 +1,7 @@
 // src/main/java/com/queueless/backend/service/FcmService.java
 package com.queueless.backend.service;
 
+import com.google.firebase.FirebaseApp;
 import com.google.firebase.messaging.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -35,7 +36,22 @@ public class FcmService {
         send(message);
     }
 
+    /**
+     * Firebase is optional: when no service-account file is configured, FirebaseApp is never
+     * initialized and FirebaseMessaging.getInstance() would throw IllegalStateException.
+     */
+    private boolean firebaseUnavailable() {
+        if (FirebaseApp.getApps().isEmpty()) {
+            log.debug("Firebase is not configured; skipping push notification");
+            return true;
+        }
+        return false;
+    }
+
     private void send(Message message) {
+        if (firebaseUnavailable()) {
+            return;
+        }
         try {
             String response = FirebaseMessaging.getInstance().send(message);
             log.info("Successfully sent message: {}", response);
@@ -45,6 +61,9 @@ public class FcmService {
     }
 
     public void sendMulticast(List<String> tokens, String title, String body, String queueId) {
+        if (tokens == null || tokens.isEmpty() || firebaseUnavailable()) {
+            return;
+        }
         MulticastMessage message = MulticastMessage.builder()
                 .addAllTokens(tokens)
                 .setNotification(Notification.builder()

@@ -1,20 +1,22 @@
 package com.queueless.backend.exception;
 
-import com.fasterxml.jackson.databind.exc.InvalidFormatException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
@@ -118,9 +120,9 @@ public class GlobalExceptionHandler {
         log.warn("Validation error: {} - {}", request.getRequestURI(), ex.getMessage());
         Map<String, String> errors = new HashMap<>();
         ex.getBindingResult().getAllErrors().forEach((error) -> {
-            String fieldName = ((FieldError) error).getField();
-            String errorMessage = error.getDefaultMessage();
-            errors.put(fieldName, errorMessage);
+            // Class-level constraints produce ObjectErrors, not FieldErrors
+            String fieldName = error instanceof FieldError fieldError ? fieldError.getField() : error.getObjectName();
+            errors.put(fieldName, error.getDefaultMessage());
         });
 
         ValidationErrorResponse error = new ValidationErrorResponse(
@@ -150,17 +152,25 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ApiError> handleHttpMessageNotReadable(HttpMessageNotReadableException ex, HttpServletRequest request) {
         log.warn("Malformed JSON request: {} - {}", request.getRequestURI(), ex.getMessage());
-        String message = "Malformed JSON request";
-        if (ex.getCause() instanceof InvalidFormatException) {
-            message = "Invalid value format in request body";
-        }
         ApiError error = new ApiError(
                 HttpStatus.BAD_REQUEST.value(),
                 HttpStatus.BAD_REQUEST.getReasonPhrase(),
-                message,
+                "Malformed JSON request or invalid value format in request body",
                 request.getRequestURI()
         );
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(error);
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiError> handleMaxUploadSize(MaxUploadSizeExceededException ex, HttpServletRequest request) {
+        log.warn("Upload too large: {} - {}", request.getRequestURI(), ex.getMessage());
+        ApiError error = new ApiError(
+                HttpStatus.CONTENT_TOO_LARGE.value(),
+                HttpStatus.CONTENT_TOO_LARGE.getReasonPhrase(),
+                "Uploaded file is too large",
+                request.getRequestURI()
+        );
+        return ResponseEntity.status(HttpStatus.CONTENT_TOO_LARGE).body(error);
     }
 
     @ExceptionHandler(MissingServletRequestParameterException.class)
@@ -217,6 +227,10 @@ public class GlobalExceptionHandler {
     // Fallback for any other runtime exception
     @ExceptionHandler(RuntimeException.class)
     public ResponseEntity<ApiError> handleRuntime(RuntimeException ex, HttpServletRequest request) {
+        if (ex instanceof ErrorResponse errorResponse) {
+            // e.g. ResponseStatusException – keep the status it was thrown with
+            return fromErrorResponse(ex, errorResponse, request);
+        }
         log.error("Runtime exception: {} - {}", request.getRequestURI(), ex.getMessage(), ex);
         ApiError error = new ApiError(
                 HttpStatus.BAD_REQUEST.value(),
@@ -230,6 +244,10 @@ public class GlobalExceptionHandler {
     // Catch-all for any other exception
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiError> handleGeneral(Exception ex, HttpServletRequest request) {
+        if (ex instanceof ErrorResponse errorResponse) {
+            // e.g. NoResourceFoundException (404), HttpRequestMethodNotSupportedException (405)
+            return fromErrorResponse(ex, errorResponse, request);
+        }
         log.error("Unexpected error: {} - {}", request.getRequestURI(), ex.getMessage(), ex);
         ApiError error = new ApiError(
                 HttpStatus.INTERNAL_SERVER_ERROR.value(),
@@ -238,6 +256,16 @@ public class GlobalExceptionHandler {
                 request.getRequestURI()
         );
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+    }
+
+    private ResponseEntity<ApiError> fromErrorResponse(Exception ex, ErrorResponse errorResponse, HttpServletRequest request) {
+        HttpStatusCode status = errorResponse.getStatusCode();
+        HttpStatus resolved = HttpStatus.resolve(status.value());
+        String reason = resolved != null ? resolved.getReasonPhrase() : String.valueOf(status.value());
+        String detail = errorResponse.getBody().getDetail();
+        log.warn("{} {}: {}", status.value(), request.getRequestURI(), ex.getMessage());
+        ApiError error = new ApiError(status.value(), reason, detail != null ? detail : reason, request.getRequestURI());
+        return ResponseEntity.status(status).body(error);
     }
 
     @lombok.Data

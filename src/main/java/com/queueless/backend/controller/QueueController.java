@@ -468,6 +468,10 @@ public class QueueController {
     @ApiResponse(responseCode = "403", description = "Forbidden")
     @ApiResponse(responseCode = "404", description = "Queue not found")
     public ResponseEntity<List<QueueToken>> getPendingEmergencyTokens(@PathVariable String queueId) {
+        ResponseEntity<List<QueueToken>> denied = checkQueueOwnership(queueId);
+        if (denied != null) {
+            return denied;
+        }
         try {
             List<QueueToken> pendingTokens = queueService.getPendingEmergencyTokens(queueId);
             return ResponseEntity.ok(pendingTokens);
@@ -489,6 +493,10 @@ public class QueueController {
             @PathVariable String tokenId,
             @RequestParam boolean approve,
             @RequestParam(required = false) String reason) {
+        ResponseEntity<Queue> denied = checkQueueOwnership(queueId);
+        if (denied != null) {
+            return denied;
+        }
         try {
             Queue updatedQueue = queueService.approveEmergencyToken(queueId, tokenId, approve, reason);
             return ResponseEntity.ok(updatedQueue);
@@ -660,5 +668,23 @@ public class QueueController {
 
         UserPositionDTO position = queueService.getUserPosition(queueId, userId);
         return ResponseEntity.ok(position);
+    }
+
+    /**
+     * Returns null when the current user is the queue's provider or an ADMIN; otherwise a 404/403 response.
+     */
+    private <T> ResponseEntity<T> checkQueueOwnership(String queueId) {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        Queue queue = queueService.getQueueById(queueId);
+        if (queue == null) {
+            return ResponseEntity.notFound().build();
+        }
+        boolean isAdmin = authentication.getAuthorities().stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
+        if (!isAdmin && !authentication.getName().equals(queue.getProviderId())) {
+            log.warn("User {} attempted to manage queue {} they do not own", authentication.getName(), queueId);
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        return null;
     }
 }

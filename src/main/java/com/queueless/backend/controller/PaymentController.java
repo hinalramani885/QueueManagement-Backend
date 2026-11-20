@@ -3,7 +3,10 @@ package com.queueless.backend.controller;
 import com.queueless.backend.dto.OrderResponse;
 import com.queueless.backend.dto.TokenResponse;
 import com.queueless.backend.enums.Role;
+import com.queueless.backend.exception.AccessDeniedException;
+import com.queueless.backend.model.Payment;
 import com.queueless.backend.model.Token;
+import com.queueless.backend.security.annotations.AdminOnly;
 import com.queueless.backend.service.PaymentService;
 import com.razorpay.Order;
 import com.razorpay.RazorpayException;
@@ -55,12 +58,13 @@ public class PaymentController {
     public TokenResponse confirmPayment(
             @RequestParam String orderId,
             @RequestParam String paymentId,
+            @Parameter(description = "razorpay_signature returned by Razorpay checkout") @RequestParam String signature,
             @RequestParam String email,
             @RequestParam String tokenType
     ) {
         log.info("confirmPayment: orderId={}, paymentId={}, email={}, tokenType={}", orderId, paymentId, email, tokenType);
-        paymentService.confirmPayment(orderId, paymentId);
-        Token token = paymentService.generateToken(email, tokenType, Role.ADMIN, false, null);
+        Payment payment = paymentService.confirmPayment(orderId, paymentId, signature, Role.ADMIN, tokenType, email);
+        Token token = paymentService.generateToken(payment.getCreatedForEmail(), tokenType, Role.ADMIN, false, null);
         return new TokenResponse(token.getTokenValue());
     }
 
@@ -73,13 +77,16 @@ public class PaymentController {
     public TokenResponse confirmProviderPayment(
             @RequestParam String orderId,
             @RequestParam String paymentId,
+            @Parameter(description = "razorpay_signature returned by Razorpay checkout") @RequestParam String signature,
             @RequestParam String providerEmail,
             @RequestParam String tokenType
     ) throws RazorpayException {
         log.info("confirmProviderPayment: orderId={}, paymentId={}, providerEmail={}, tokenType={}", orderId, paymentId, providerEmail, tokenType);
-        paymentService.confirmPayment(orderId, paymentId);
-        String adminId = paymentService.getAdminIdFromOrder(orderId);
-        Token token = paymentService.generateToken(providerEmail, tokenType, Role.PROVIDER, true, adminId);
+        Payment payment = paymentService.confirmPayment(orderId, paymentId, signature, Role.PROVIDER, tokenType, providerEmail);
+        String adminId = payment.getCreatedByAdminId() != null
+                ? payment.getCreatedByAdminId()
+                : paymentService.getAdminIdFromOrder(orderId);
+        Token token = paymentService.generateToken(payment.getCreatedForEmail(), tokenType, Role.PROVIDER, true, adminId);
         return new TokenResponse(token.getTokenValue());
     }
 
@@ -88,16 +95,27 @@ public class PaymentController {
     @ApiResponse(responseCode = "200", description = "List of generated tokens",
             content = @Content(schema = @Schema(implementation = TokenResponse.class)))
     @ApiResponse(responseCode = "404", description = "Payment not found")
+    @AdminOnly
     public List<TokenResponse> confirmProviderPaymentBulk(
             @RequestParam String orderId,
             @RequestParam String paymentId,
+            @Parameter(description = "razorpay_signature returned by Razorpay checkout") @RequestParam String signature,
             @RequestBody List<String> emails,
             @RequestParam String tokenType,
             Authentication authentication
     ) {
-        log.info("confirmProviderPaymentBulk: orderId={}, paymentId={}, emails={}, tokenType={}, adminId={}", orderId, paymentId, emails, tokenType, authentication.getName());
-        paymentService.confirmPayment(orderId, paymentId);
         String adminId = authentication.getName();
+        log.info("confirmProviderPaymentBulk: orderId={}, paymentId={}, emails={}, tokenType={}, adminId={}", orderId, paymentId, emails, tokenType, adminId);
+        if (emails == null || emails.isEmpty()) {
+            throw new IllegalArgumentException("At least one provider email is required");
+        }
+        Payment payment = paymentService.confirmPayment(orderId, paymentId, signature, Role.PROVIDER, tokenType, null);
+        if (payment.getCreatedByAdminId() != null && !payment.getCreatedByAdminId().equals(adminId)) {
+            throw new AccessDeniedException("This order was not created by you");
+        }
+        if ((long) PaymentService.priceFor(tokenType) * emails.size() > payment.getAmount()) {
+            throw new IllegalArgumentException("Paid amount does not cover " + emails.size() + " tokens");
+        }
 
         return emails.stream()
                 .map(email -> paymentService.generateToken(email, tokenType, Role.PROVIDER, true, adminId))

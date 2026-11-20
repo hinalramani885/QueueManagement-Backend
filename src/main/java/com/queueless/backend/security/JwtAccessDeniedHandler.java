@@ -1,6 +1,5 @@
 package com.queueless.backend.security;
 
-import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
@@ -16,8 +15,9 @@ public class JwtAccessDeniedHandler implements AccessDeniedHandler {
 
     @Override
     public void handle(HttpServletRequest request, HttpServletResponse response,
-                       AccessDeniedException accessDeniedException) throws IOException, ServletException {
+                       AccessDeniedException accessDeniedException) throws IOException {
         log.warn("Access denied for {}: {}", request.getRequestURI(), accessDeniedException.getMessage());
-        response.sendError(HttpServletResponse.SC_FORBIDDEN, "Access Denied");
+        SecurityErrorResponses.write(response, HttpServletResponse.SC_FORBIDDEN, "Forbidden",
+                "You do not have permission to access this resource", request.getRequestURI());
     }
 }

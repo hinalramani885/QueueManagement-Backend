@@ -1,6 +1,8 @@
 package com.queueless.backend.security;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
@@ -21,6 +23,7 @@ import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.util.Arrays;
+import java.util.List;
 
 @Configuration
 @EnableWebSecurity
@@ -38,15 +41,24 @@ public class SecurityConfig {
         return new BCryptPasswordEncoder();
     }
 
+    @Value("${cors.allowed-origins:http://localhost:5173,https://localhost:5173}")
+    private List<String> allowedOrigins;
+
+    /**
+     * RateLimitFilter is a @Component so Spring Boot would also register it as a plain servlet filter.
+     * It must only run inside the security filter chain.
+     */
     @Bean
-    public JwtAuthenticationFilter jwtAuthenticationFilter() {
-        return new JwtAuthenticationFilter(jwtProvider);
+    public FilterRegistrationBean<RateLimitFilter> rateLimitFilterRegistration(RateLimitFilter filter) {
+        FilterRegistrationBean<RateLimitFilter> registration = new FilterRegistrationBean<>(filter);
+        registration.setEnabled(false);
+        return registration;
     }
 
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(Arrays.asList("https://localhost:5173", "https://localhost:3000"));
+        configuration.setAllowedOriginPatterns(allowedOrigins.stream().map(String::trim).filter(s -> !s.isEmpty()).toList());
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
         configuration.setAllowedHeaders(Arrays.asList("Authorization", "Content-Type", "X-Requested-With", "Accept",
                 "Origin", "Access-Control-Request-Method", "Access-Control-Request-Headers"));
@@ -88,11 +100,12 @@ public class SecurityConfig {
                         .xssProtection(xss -> xss
                                 .headerValue(XXssProtectionHeaderWriter.HeaderValue.ENABLED_MODE_BLOCK)
                         )
-                        .contentTypeOptions(HeadersConfigurer.ContentTypeOptionsConfig::disable) // Keep if needed, else enable
                 )
                 .addFilterBefore(rateLimitFilter, SecurityContextHolderFilter.class)
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                        // Error dispatches must be reachable, otherwise every 4xx/5xx is rewritten to 401
+                        .requestMatchers("/error").permitAll()
                         // Swagger UI
                         .requestMatchers(
                                 "/v3/api-docs/**",
@@ -109,7 +122,6 @@ public class SecurityConfig {
                                 "/api/payment/create-order",
                                 "/api/payment/confirm",
                                 "/api/payment/confirm-provider",
-                                "/api/payment/confirm-provider-bulk",
                                 "/api/search/**",
                                 "/api/public/**",
                                 "/actuator/health",
@@ -148,12 +160,13 @@ public class SecurityConfig {
                                 HttpMethod.POST,
                                 "/api/feedback"
                         ).hasRole("USER")
+                        .requestMatchers(HttpMethod.POST, "/api/payment/confirm-provider-bulk").hasRole("ADMIN")
                         .requestMatchers("/api/export/**").hasAnyRole("PROVIDER", "ADMIN")
-                        .requestMatchers(HttpMethod.GET, "/api/exports/**").hasAnyRole("PROVIDER", "ADMIN")
-                        // Public read-only endpoints (FIXED typo)
+                        // Public read-only endpoints
                         .requestMatchers(
                                 HttpMethod.GET,
                                 "/api/places",
+                                "/api/places/top-rated",
                                 "/api/places/{id}",
                                 "/api/places/type/**",
                                 "/api/places/nearby",
@@ -161,7 +174,7 @@ public class SecurityConfig {
                                 "/api/services",
                                 "/api/services/{id}",
                                 "/api/services/place/**",
-                                "/api/queues/all",        // FIXED: was /abapi/queues/all
+                                "/api/queues/all",
                                 "/api/queues/by-place/**",
                                 "/api/queues/by-service/**",
                                 "/api/queues/{queueId}"
@@ -194,7 +207,8 @@ public class SecurityConfig {
                         .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 );
 
-        http.addFilterBefore(jwtAuthenticationFilter(), UsernamePasswordAuthenticationFilter.class);
+        // Not a @Bean on purpose: as a bean Spring Boot would also register it as a servlet filter
+        http.addFilterBefore(new JwtAuthenticationFilter(jwtProvider), UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
     }

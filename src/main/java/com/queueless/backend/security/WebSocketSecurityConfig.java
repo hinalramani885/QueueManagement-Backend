@@ -1,20 +1,24 @@
 package com.queueless.backend.security;
 
-import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.messaging.Message;
 import org.springframework.messaging.simp.SimpMessageType;
-import org.springframework.security.config.annotation.web.messaging.MessageSecurityMetadataSourceRegistry;
-import org.springframework.security.config.annotation.web.socket.AbstractSecurityWebSocketMessageBrokerConfigurer;
+import org.springframework.messaging.support.ChannelInterceptor;
+import org.springframework.security.authorization.AuthorizationManager;
+import org.springframework.security.config.annotation.web.socket.EnableWebSocketSecurity;
+import org.springframework.security.messaging.access.intercept.MessageMatcherDelegatingAuthorizationManager;
 
-@Slf4j
 @Configuration
-@RequiredArgsConstructor
-public class WebSocketSecurityConfig extends AbstractSecurityWebSocketMessageBrokerConfigurer {
+@EnableWebSocketSecurity
+public class WebSocketSecurityConfig {
 
-    @Override
-    protected void configureInbound(MessageSecurityMetadataSourceRegistry messages) {
+    @Bean
+    public AuthorizationManager<Message<?>> messageAuthorizationManager(
+            MessageMatcherDelegatingAuthorizationManager.Builder messages) {
+
         messages
+                // Connection lifecycle messages (CONNECT is authenticated by StompJwtChannelInterceptor)
                 .simpTypeMatchers(
                         SimpMessageType.CONNECT,
                         SimpMessageType.HEARTBEAT,
@@ -22,15 +26,29 @@ public class WebSocketSecurityConfig extends AbstractSecurityWebSocketMessageBro
                         SimpMessageType.DISCONNECT,
                         SimpMessageType.OTHER
                 ).permitAll()
-                // UNSUBSCRIBE is typically allowed without authentication because it's tied to the session
+                // Client messages sent to application endpoints
                 .simpDestMatchers("/app/**").authenticated()
-                .simpSubscribeDestMatchers("/user/**", "/topic/queues/*").authenticated()
+                // User-specific and queue/place/service subscriptions
+                .simpSubscribeDestMatchers("/user/**").authenticated()
+                .simpSubscribeDestMatchers("/topic/queues", "/topic/queues/*").authenticated()
+                .simpSubscribeDestMatchers("/topic/places/**", "/topic/services/**").authenticated()
+                // Admin subscriptions
                 .simpSubscribeDestMatchers("/topic/admin/**").hasRole("ADMIN")
+                // Reject everything else
                 .anyMessage().denyAll();
+
+        return messages.build();
     }
 
-    @Override
-    protected boolean sameOriginDisabled() {
-        return true;
+    /**
+     * {@code @EnableWebSocketSecurity} enforces a CSRF token on STOMP CONNECT frames by default.
+     * This API authenticates WebSocket clients with a JWT in the CONNECT headers (not cookies),
+     * so CSRF protection does not apply. Defining a bean with this name replaces the default
+     * CSRF interceptor (equivalent to the old {@code sameOriginDisabled() = true}).
+     */
+    @Bean(name = "csrfChannelInterceptor")
+    public ChannelInterceptor csrfChannelInterceptor() {
+        return new ChannelInterceptor() {
+        };
     }
 }

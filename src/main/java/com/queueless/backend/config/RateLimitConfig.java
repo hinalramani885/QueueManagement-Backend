@@ -2,7 +2,6 @@ package com.queueless.backend.config;
 
 import io.github.bucket4j.Bandwidth;
 import io.github.bucket4j.Bucket;
-import io.github.bucket4j.Refill;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
@@ -50,13 +49,20 @@ public class RateLimitConfig {
             log.debug("Creating new rate limit bucket for key: {} (group: {})", key, endpointGroup);
             Bandwidth limit;
             if ("token".equals(endpointGroup)) {
-                limit = Bandwidth.classic(tokenCapacity, Refill.greedy(tokenRefill, tokenDuration));
+                limit = bandwidth(tokenCapacity, tokenRefill, tokenDuration);
             } else if ("search".equals(endpointGroup)) {
-                limit = Bandwidth.classic(searchCapacity, Refill.greedy(searchRefill, searchDuration));
+                limit = bandwidth(searchCapacity, searchRefill, searchDuration);
             } else {
-                limit = Bandwidth.classic(capacity, Refill.greedy(refill, duration));
+                limit = bandwidth(capacity, refill, duration);
             }
             return Bucket.builder().addLimit(limit).build();
         });
+    }
+
+    private static Bandwidth bandwidth(int capacity, int refillTokens, Duration period) {
+        return Bandwidth.builder()
+                .capacity(capacity)
+                .refillGreedy(refillTokens, period)
+                .build();
     }
 }
