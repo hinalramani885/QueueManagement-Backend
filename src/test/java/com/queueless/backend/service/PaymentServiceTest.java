@@ -448,7 +448,7 @@ class PaymentServiceTest {
         assertThrows(IllegalArgumentException.class, () -> PayerDetails.of(null, null, "no-at-sign", null));
         assertThrows(IllegalArgumentException.class, () -> PayerDetails.of(null, null, "a@1bank", null));
         assertThrows(IllegalArgumentException.class, () -> PayerDetails.of(null, "12345", null, null));
-        assertThrows(IllegalArgumentException.class, () -> PayerDetails.of(null, null, null, "upi"));
+        assertEquals(new PayerDetails(null, null, null, "upi"), PayerDetails.of(null, null, null, "upi"));
         assertThrows(IllegalArgumentException.class, () -> PayerDetails.of(null, null, null, "bitcoin"));
     }
 }

@@ -9,7 +9,7 @@ import java.util.regex.Pattern;
  *
  * @param name            payer's full name
  * @param phone           payer's mobile number (digits, optional leading +)
- * @param upiId           UPI ID / VPA, e.g. {@code name@okaxis}
+ * @param upiId           payer's UPI ID / VPA, e.g. {@code name@okaxis} (optional, stored for the record)
  * @param preferredMethod payment method chosen on our page: upi, card, netbanking or wallet
  */
 public record PayerDetails(String name, String phone, String upiId, String preferredMethod) {
@@ -50,9 +50,8 @@ public record PayerDetails(String name, String phone, String upiId, String prefe
                 throw new IllegalArgumentException("Invalid payment method");
             }
         }
-        if ("upi".equals(cleanMethod) && cleanUpi == null) {
-            throw new IllegalArgumentException("UPI ID is required for UPI payments");
-        }
+        // The UPI ID is optional even for UPI: since NPCI retired "UPI Collect" (28 Feb 2026) Razorpay
+        // charges UPI via QR / intent, so the ID is only stored for the payment record.
         return new PayerDetails(cleanName, cleanPhone, cleanUpi, cleanMethod);
     }
 

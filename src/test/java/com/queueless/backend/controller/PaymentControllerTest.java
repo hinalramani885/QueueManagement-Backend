@@ -336,13 +336,17 @@ class PaymentControllerTest {
     }
 
     @Test
-    void createOrder_UpiMethodWithoutUpiId_BadRequest() throws Exception {
+    void createOrder_UpiMethodWithoutUpiId_IsAllowed() throws Exception {
+        // UPI ID is optional: Razorpay charges UPI by QR / intent since UPI Collect was retired
+        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull(),
+                eq(new PayerDetails(null, null, null, "upi"))))
+                .thenReturn(mockOrder(orderId, 10000));
         mockMvc.perform(post("/api/payment/create-order")
                         .param("email", email)
                         .param("role", Role.ADMIN.name())
                         .param("tokenType", tokenType)
                         .param("preferredMethod", "upi"))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isOk());
     }
 
     @Test
