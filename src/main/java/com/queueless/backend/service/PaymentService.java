@@ -1,5 +1,7 @@
 package com.queueless.backend.service;
 
+import com.queueless.backend.dto.PayerDetails;
+import com.queueless.backend.enums.PaymentStatus;
 import com.queueless.backend.exception.ResourceNotFoundException;
 import com.queueless.backend.model.Payment;
 import com.queueless.backend.enums.Role;
@@ -24,6 +26,7 @@ import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -43,6 +46,12 @@ public class PaymentService {
     private String RAZORPAY_SECRET;
 
     public Order createOrder(String email, Role role, String tokenType, String adminId) throws Exception {
+        return createOrder(email, role, tokenType, adminId, PayerDetails.EMPTY);
+    }
+
+    /** Creates a Razorpay order and stores it together with the payer details entered on the pricing page. */
+    public Order createOrder(String email, Role role, String tokenType, String adminId, PayerDetails payer) throws Exception {
+        PayerDetails details = payer != null ? payer : PayerDetails.EMPTY;
         log.info("Initiating order creation | email={}, role={}, tokenType={}", email, role, tokenType);
 
         RazorpayClient razorpayClient = new RazorpayClient(RAZORPAY_KEY, RAZORPAY_SECRET);
@@ -89,10 +98,14 @@ public class PaymentService {
             orderRequest.put("currency", "INR");
             orderRequest.put("receipt", "receipt_" + System.currentTimeMillis());
 
-            // Store the admin ID in a note
+            // Notes are visible in the Razorpay dashboard; the admin ID is also read back for provider tokens
+            JSONObject notes = new JSONObject();
             if (role == Role.PROVIDER && adminId != null) {
-                JSONObject notes = new JSONObject();
                 notes.put("adminId", adminId);
+            }
+            if (details.name() != null) notes.put("payerName", details.name());
+            if (details.upiId() != null) notes.put("upiId", details.upiId());
+            if (notes.length() > 0) {
                 orderRequest.put("notes", notes);
             }
             log.debug("Sending request to Razorpay | payload={}", orderRequest);
@@ -105,9 +118,15 @@ public class PaymentService {
                     .createdForEmail(email)
                     .role(role)
                     .tokenType(tokenType)
+                    .currency("INR")
                     .isPaid(false)
+                    .status(PaymentStatus.CREATED)
                     .createdAt(LocalDateTime.now())
                     .createdByAdminId(role == Role.PROVIDER ? adminId : null)
+                    .payerName(details.name())
+                    .payerPhone(details.phone())
+                    .upiId(details.upiId())
+                    .preferredMethod(details.preferredMethod())
                     .build();
 
             paymentRepository.save(payment);
@@ -159,6 +178,10 @@ public class PaymentService {
 
         payment.setRazorpayPaymentId(paymentId);
         payment.setPaid(true);
+        payment.setStatus(PaymentStatus.PAID);
+        payment.setPaidAt(LocalDateTime.now());
+        payment.setFailureReason(null);
+        applyRazorpayPaymentDetails(payment, fetchRazorpayPayment(paymentId));
         paymentRepository.save(payment);
 
         log.info("Payment confirmed successfully | orderId={}, paymentId={}, email={}", orderId, paymentId, payment.getCreatedForEmail());
@@ -170,11 +193,69 @@ public class PaymentService {
         details.put("amount", payment.getAmount());
         details.put("email", payment.getCreatedForEmail());
         details.put("role", payment.getRole() != null ? payment.getRole().name() : "UNKNOWN");
+        if (payment.getMethod() != null) details.put("method", payment.getMethod());
 
         auditLogService.logEvent("PAYMENT_COMPLETED",
                 "Payment completed for " + (payment.getRole() != null ? payment.getRole() : "UNKNOWN"),
                 details);
         return payment;
+    }
+
+    /**
+     * Records a failed checkout attempt reported by the Razorpay checkout ("payment.failed" event).
+     * Paid orders are never changed, and the customer can still retry the same order afterwards.
+     */
+    public void recordFailure(String orderId, String paymentId, String reason) {
+        Payment payment = paymentRepository.findByRazorpayOrderId(orderId)
+                .orElseThrow(() -> new ResourceNotFoundException("Payment not found"));
+        if (payment.isPaid()) {
+            log.info("Ignoring failure report for already paid order | orderId={}", orderId);
+            return;
+        }
+        String cleanReason = reason == null || reason.isBlank() ? "Payment failed" : reason.trim();
+        payment.setStatus(PaymentStatus.FAILED);
+        payment.setFailedAt(LocalDateTime.now());
+        payment.setFailureReason(cleanReason.length() > 300 ? cleanReason.substring(0, 300) : cleanReason);
+        paymentRepository.save(payment);
+        log.info("Payment attempt failed | orderId={}, paymentId={}, reason={}", orderId, paymentId, payment.getFailureReason());
+    }
+
+    /** Stores the token values issued for a confirmed payment. */
+    public void recordIssuedTokens(Payment payment, List<String> tokenValues) {
+        if (payment.getIssuedTokens() == null) {
+            payment.setIssuedTokens(new java.util.ArrayList<>());
+        }
+        payment.getIssuedTokens().addAll(tokenValues);
+        paymentRepository.save(payment);
+    }
+
+    /**
+     * Fetches the payment entity from Razorpay (method, vpa, bank, ...). Best effort: returns null when
+     * Razorpay is not configured or unreachable, because the verified signature already proves the payment.
+     */
+    JSONObject fetchRazorpayPayment(String paymentId) {
+        if (RAZORPAY_KEY == null || !RAZORPAY_KEY.startsWith("rzp_") || RAZORPAY_SECRET == null || RAZORPAY_SECRET.isBlank()) {
+            return null;
+        }
+        try {
+            RazorpayClient client = new RazorpayClient(RAZORPAY_KEY, RAZORPAY_SECRET);
+            return client.payments.fetch(paymentId).toJson();
+        } catch (Exception e) {
+            log.warn("Could not fetch payment details from Razorpay | paymentId={}, error={}", paymentId, e.getMessage());
+            return null;
+        }
+    }
+
+    static void applyRazorpayPaymentDetails(Payment payment, JSONObject details) {
+        if (details == null) {
+            return;
+        }
+        payment.setMethod(details.optString("method", null));
+        payment.setVpa(details.optString("vpa", null));
+        payment.setBank(details.optString("bank", null));
+        payment.setWallet(details.optString("wallet", null));
+        payment.setRazorpayEmail(details.optString("email", null));
+        payment.setRazorpayContact(details.optString("contact", null));
     }
 
     /** Price in paise of a single ADMIN/PROVIDER token for the given plan (same prices used by createOrder). */

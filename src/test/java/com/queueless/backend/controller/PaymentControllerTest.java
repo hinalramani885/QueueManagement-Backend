@@ -4,6 +4,7 @@ import tools.jackson.databind.ObjectMapper;
 import com.queueless.backend.config.RateLimitConfig;
 import com.queueless.backend.config.TestSecurityConfig;
 import com.queueless.backend.dto.OrderResponse;
+import com.queueless.backend.dto.PayerDetails;
 import com.queueless.backend.dto.TokenResponse;
 import com.queueless.backend.enums.Role;
 import com.queueless.backend.exception.ResourceNotFoundException;
@@ -67,7 +68,7 @@ class PaymentControllerTest {
     @Test
     void createOrder_Success() throws Exception {
         Order mockOrder = mockOrder(orderId, 10000);
-        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull()))
+        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull(), eq(PayerDetails.EMPTY)))
                 .thenReturn(mockOrder);
 
         mockMvc.perform(post("/api/payment/create-order")
@@ -82,7 +83,7 @@ class PaymentControllerTest {
 
     @Test
     void createOrder_InvalidTokenType() throws Exception {
-        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq("INVALID"), isNull()))
+        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq("INVALID"), isNull(), eq(PayerDetails.EMPTY)))
                 .thenThrow(new IllegalArgumentException("Invalid token type"));
 
         mockMvc.perform(post("/api/payment/create-order")
@@ -94,7 +95,7 @@ class PaymentControllerTest {
 
     @Test
     void createOrder_RazorpayException() throws Exception {
-        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull()))
+        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull(), eq(PayerDetails.EMPTY)))
                 .thenThrow(new RazorpayException("Razorpay error"));
 
         mockMvc.perform(post("/api/payment/create-order")
@@ -300,6 +301,84 @@ class PaymentControllerTest {
                         .content(objectMapper.writeValueAsString(List.of("prov1@test.com"))))
                 .andExpect(status().isForbidden());
         verify(paymentService, never()).confirmPayment(anyString(), anyString(), anyString(), any(), anyString(), any());
+    }
+
+    // ==================== PAYER DETAILS / UPI ====================
+
+    @Test
+    void createOrder_WithPayerDetails_PassesNormalisedDetails() throws Exception {
+        PayerDetails expected = new PayerDetails("Asha Patel", "9876543210", "asha.patel@okaxis", "upi");
+        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull(), eq(expected)))
+                .thenReturn(mockOrder(orderId, 10000));
+
+        mockMvc.perform(post("/api/payment/create-order")
+                        .param("email", email)
+                        .param("role", Role.ADMIN.name())
+                        .param("tokenType", tokenType)
+                        .param("payerName", "  Asha Patel ")
+                        .param("payerPhone", "98765 43210")
+                        .param("upiId", "Asha.Patel@OKAXIS")
+                        .param("preferredMethod", "UPI"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.orderId").value(orderId));
+    }
+
+    @Test
+    void createOrder_InvalidUpiId_BadRequest() throws Exception {
+        mockMvc.perform(post("/api/payment/create-order")
+                        .param("email", email)
+                        .param("role", Role.ADMIN.name())
+                        .param("tokenType", tokenType)
+                        .param("upiId", "not-a-upi-id")
+                        .param("preferredMethod", "upi"))
+                .andExpect(status().isBadRequest());
+        verify(paymentService, never()).createOrder(anyString(), any(), anyString(), any(), any(PayerDetails.class));
+    }
+
+    @Test
+    void createOrder_UpiMethodWithoutUpiId_BadRequest() throws Exception {
+        mockMvc.perform(post("/api/payment/create-order")
+                        .param("email", email)
+                        .param("role", Role.ADMIN.name())
+                        .param("tokenType", tokenType)
+                        .param("preferredMethod", "upi"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void confirmPayment_RecordsIssuedToken() throws Exception {
+        Payment payment = paidPayment(Role.ADMIN, email, null, 10000);
+        when(paymentService.confirmPayment(orderId, paymentId, signature, Role.ADMIN, tokenType, email))
+                .thenReturn(payment);
+        when(paymentService.generateToken(email, tokenType, Role.ADMIN, false, null))
+                .thenReturn(Token.builder().tokenValue(tokenValue).build());
+
+        mockMvc.perform(post("/api/payment/confirm")
+                        .param("orderId", orderId)
+                        .param("paymentId", paymentId)
+                        .param("signature", signature)
+                        .param("email", email)
+                        .param("tokenType", tokenType))
+                .andExpect(status().isOk());
+        verify(paymentService).recordIssuedTokens(payment, List.of(tokenValue));
+    }
+
+    @Test
+    void paymentFailed_RecordsFailure() throws Exception {
+        mockMvc.perform(post("/api/payment/failed")
+                        .param("orderId", orderId)
+                        .param("paymentId", paymentId)
+                        .param("reason", "Payment declined by bank"))
+                .andExpect(status().isNoContent());
+        verify(paymentService).recordFailure(orderId, paymentId, "Payment declined by bank");
+    }
+
+    @Test
+    void paymentFailed_UnknownOrder_NotFound() throws Exception {
+        doThrow(new ResourceNotFoundException("Payment not found"))
+                .when(paymentService).recordFailure(eq("missing"), any(), any());
+        mockMvc.perform(post("/api/payment/failed").param("orderId", "missing"))
+                .andExpect(status().isNotFound());
     }
 
     // Helper to create a mock Razorpay Order

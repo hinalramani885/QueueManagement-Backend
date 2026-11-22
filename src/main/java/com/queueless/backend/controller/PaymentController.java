@@ -1,6 +1,7 @@
 package com.queueless.backend.controller;
 
 import com.queueless.backend.dto.OrderResponse;
+import com.queueless.backend.dto.PayerDetails;
 import com.queueless.backend.dto.TokenResponse;
 import com.queueless.backend.enums.Role;
 import com.queueless.backend.exception.AccessDeniedException;
@@ -18,6 +19,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
@@ -43,10 +45,15 @@ public class PaymentController {
             @Parameter(description = "Email of the user for whom the token is purchased") @RequestParam String email,
             @Parameter(description = "Role (ADMIN or PROVIDER)") @RequestParam Role role,
             @Parameter(description = "Token type: 1_MONTH, 1_YEAR, or LIFETIME") @RequestParam String tokenType,
-            @Parameter(description = "Admin ID (required only for PROVIDER tokens)") @RequestParam(required = false) String adminId
+            @Parameter(description = "Admin ID (required only for PROVIDER tokens)") @RequestParam(required = false) String adminId,
+            @Parameter(description = "Payer's full name") @RequestParam(required = false) String payerName,
+            @Parameter(description = "Payer's mobile number") @RequestParam(required = false) String payerPhone,
+            @Parameter(description = "Payer's UPI ID, e.g. name@okaxis (required when preferredMethod=upi)") @RequestParam(required = false) String upiId,
+            @Parameter(description = "Preferred method: upi, card, netbanking or wallet") @RequestParam(required = false) String preferredMethod
     ) throws Exception {
-        log.info("createOrder request: email={}, role={}, tokenType={}, adminId={}", email, role, tokenType, adminId);
-        Order order = paymentService.createOrder(email, role, tokenType, adminId);
+        log.info("createOrder request: email={}, role={}, tokenType={}, adminId={}, method={}", email, role, tokenType, adminId, preferredMethod);
+        PayerDetails payer = PayerDetails.of(payerName, payerPhone, upiId, preferredMethod);
+        Order order = paymentService.createOrder(email, role, tokenType, adminId, payer);
         return new OrderResponse(order.get("id"), order.get("amount"), "INR");
     }
 
@@ -65,7 +72,22 @@ public class PaymentController {
         log.info("confirmPayment: orderId={}, paymentId={}, email={}, tokenType={}", orderId, paymentId, email, tokenType);
         Payment payment = paymentService.confirmPayment(orderId, paymentId, signature, Role.ADMIN, tokenType, email);
         Token token = paymentService.generateToken(payment.getCreatedForEmail(), tokenType, Role.ADMIN, false, null);
+        paymentService.recordIssuedTokens(payment, List.of(token.getTokenValue()));
         return new TokenResponse(token.getTokenValue());
+    }
+
+    @PostMapping("/failed")
+    @Operation(summary = "Record a failed payment attempt",
+            description = "Called by the checkout page when Razorpay reports payment.failed; stores the reason on the order.")
+    @ApiResponse(responseCode = "204", description = "Failure recorded")
+    @ApiResponse(responseCode = "404", description = "Payment not found")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void paymentFailed(
+            @RequestParam String orderId,
+            @RequestParam(required = false) String paymentId,
+            @RequestParam(required = false) String reason
+    ) {
+        paymentService.recordFailure(orderId, paymentId, reason);
     }
 
     @PostMapping("/confirm-provider")
@@ -87,6 +109,7 @@ public class PaymentController {
                 ? payment.getCreatedByAdminId()
                 : paymentService.getAdminIdFromOrder(orderId);
         Token token = paymentService.generateToken(payment.getCreatedForEmail(), tokenType, Role.PROVIDER, true, adminId);
+        paymentService.recordIssuedTokens(payment, List.of(token.getTokenValue()));
         return new TokenResponse(token.getTokenValue());
     }
 
@@ -117,9 +140,11 @@ public class PaymentController {
             throw new IllegalArgumentException("Paid amount does not cover " + emails.size() + " tokens");
         }
 
-        return emails.stream()
+        List<String> tokenValues = emails.stream()
                 .map(email -> paymentService.generateToken(email, tokenType, Role.PROVIDER, true, adminId))
-                .map(token -> new TokenResponse(token.getTokenValue()))
+                .map(Token::getTokenValue)
                 .collect(Collectors.toList());
+        paymentService.recordIssuedTokens(payment, tokenValues);
+        return tokenValues.stream().map(TokenResponse::new).collect(Collectors.toList());
     }
 }
