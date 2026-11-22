@@ -34,7 +34,7 @@ public class TokenNotificationScheduler {
     private final FcmService fcmService;
     private final NotificationPreferenceService notificationPreferenceService;
 
-    @Value("${app.frontend-url:http://localhost:5173}")
+    @Value("${app.frontend-url:https://localhost:5173}")
     private String appFrontendUrl;
 
     @Value("${token.notification.before-minutes:5}")

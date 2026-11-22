@@ -29,7 +29,7 @@ public class AlertScheduler {
     private final UserRepository userRepository;
     private final EmailService emailService;
 
-    @Value("${app.frontend-url:http://localhost:5173}")
+    @Value("${app.frontend-url:https://localhost:5173}")
     private String appBaseUrl;
 
     @Scheduled(fixedRate = 300000) // every 5 minutes
