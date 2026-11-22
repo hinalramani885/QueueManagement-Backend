@@ -122,6 +122,7 @@ public class SecurityConfig {
                                 "/api/payment/create-order",
                                 "/api/payment/confirm",
                                 "/api/payment/confirm-provider",
+                                "/api/payment/failed",
                                 "/api/search/**",
                                 "/api/public/**",
                                 "/actuator/health",

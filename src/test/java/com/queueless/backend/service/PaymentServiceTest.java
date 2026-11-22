@@ -1,5 +1,7 @@
 package com.queueless.backend.service;
 
+import com.queueless.backend.dto.PayerDetails;
+import com.queueless.backend.enums.PaymentStatus;
 import com.queueless.backend.enums.Role;
 import com.queueless.backend.model.Payment;
 import com.queueless.backend.model.Token;
@@ -18,6 +20,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -347,5 +350,105 @@ class PaymentServiceTest {
             // Checking the cause since the service wraps it in a RuntimeException
             assertEquals("Failed to retrieve admin ID from order", exception.getMessage());
         }
+    }
+
+    // ================= PAYER DETAILS / STATUS TRACKING =================
+
+    @Test
+    void createOrderStoresPayerDetailsAndUpiId() throws Exception {
+        OrderClient mockOrderClient = mock(OrderClient.class);
+        Order mockOrder = mock(Order.class);
+        when(mockOrder.get("id")).thenReturn("order_upi");
+        when(mockOrderClient.create(any(JSONObject.class))).thenReturn(mockOrder);
+
+        try (MockedConstruction<RazorpayClient> mocked = mockConstruction(RazorpayClient.class,
+                (mock, context) -> mock.orders = mockOrderClient)) {
+            paymentService.createOrder("admin@test.com", Role.ADMIN, "1_YEAR", null,
+                    new PayerDetails("Asha", "9876543210", "asha@okaxis", "upi"));
+
+            verify(paymentRepository).save(argThat(p ->
+                    "Asha".equals(p.getPayerName())
+                            && "9876543210".equals(p.getPayerPhone())
+                            && "asha@okaxis".equals(p.getUpiId())
+                            && "upi".equals(p.getPreferredMethod())
+                            && p.getStatus() == PaymentStatus.CREATED
+                            && "INR".equals(p.getCurrency())));
+            ArgumentCaptor<JSONObject> captor = ArgumentCaptor.forClass(JSONObject.class);
+            verify(mockOrderClient).create(captor.capture());
+            assertEquals("asha@okaxis", captor.getValue().getJSONObject("notes").getString("upiId"));
+        }
+    }
+
+    @Test
+    void recordFailureMarksUnpaidOrderFailed() {
+        Payment payment = Payment.builder().razorpayOrderId("order_f").isPaid(false).build();
+        when(paymentRepository.findByRazorpayOrderId("order_f")).thenReturn(Optional.of(payment));
+
+        paymentService.recordFailure("order_f", "pay_f", "Payment declined by bank");
+
+        assertEquals(PaymentStatus.FAILED, payment.getStatus());
+        assertEquals("Payment declined by bank", payment.getFailureReason());
+        assertNotNull(payment.getFailedAt());
+        verify(paymentRepository).save(payment);
+    }
+
+    @Test
+    void recordFailureIgnoresPaidOrder() {
+        Payment payment = Payment.builder().razorpayOrderId("order_p").isPaid(true).status(PaymentStatus.PAID).build();
+        when(paymentRepository.findByRazorpayOrderId("order_p")).thenReturn(Optional.of(payment));
+
+        paymentService.recordFailure("order_p", "pay_p", "late failure");
+
+        assertEquals(PaymentStatus.PAID, payment.getStatus());
+        verify(paymentRepository, never()).save(any());
+    }
+
+    @Test
+    void recordIssuedTokensAppendsTokenValues() {
+        Payment payment = Payment.builder().razorpayOrderId("order_t").build();
+        paymentService.recordIssuedTokens(payment, List.of("ADMIN-1", "ADMIN-2"));
+        assertEquals(List.of("ADMIN-1", "ADMIN-2"), payment.getIssuedTokens());
+        verify(paymentRepository).save(payment);
+    }
+
+    @Test
+    void applyRazorpayPaymentDetailsCopiesMethodAndVpa() {
+        Payment payment = new Payment();
+        JSONObject json = new JSONObject()
+                .put("method", "upi").put("vpa", "asha@okaxis")
+                .put("bank", JSONObject.NULL).put("email", "a@test.com").put("contact", "+919876543210");
+        PaymentService.applyRazorpayPaymentDetails(payment, json);
+        assertEquals("upi", payment.getMethod());
+        assertEquals("asha@okaxis", payment.getVpa());
+        assertNull(payment.getBank());
+        assertEquals("+919876543210", payment.getRazorpayContact());
+    }
+
+    @Test
+    void confirmPaymentSetsPaidStatusAndTimestamp() throws Exception {
+        Payment payment = Payment.builder().razorpayOrderId("order_c").role(Role.ADMIN).tokenType("1_MONTH")
+                .createdForEmail("a@test.com").amount(10000).isPaid(false).build();
+        when(paymentRepository.findByRazorpayOrderId("order_c")).thenReturn(Optional.of(payment));
+        javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+        mac.init(new javax.crypto.spec.SecretKeySpec("test_secret".getBytes(), "HmacSHA256"));
+        String sig = java.util.HexFormat.of().formatHex(mac.doFinal("order_c|pay_c".getBytes()));
+
+        Payment result = paymentService.confirmPayment("order_c", "pay_c", sig, Role.ADMIN, "1_MONTH", "a@test.com");
+
+        assertEquals(PaymentStatus.PAID, result.getStatus());
+        assertNotNull(result.getPaidAt());
+        assertTrue(result.isPaid());
+    }
+
+    @Test
+    void payerDetailsValidation() {
+        PayerDetails d = PayerDetails.of(" Asha ", "98765-43210", "Asha.P@OKSBI", "UPI");
+        assertEquals(new PayerDetails("Asha", "9876543210", "asha.p@oksbi", "upi"), d);
+        assertEquals(PayerDetails.EMPTY, PayerDetails.of(null, " ", "", null));
+        assertThrows(IllegalArgumentException.class, () -> PayerDetails.of(null, null, "no-at-sign", null));
+        assertThrows(IllegalArgumentException.class, () -> PayerDetails.of(null, null, "a@1bank", null));
+        assertThrows(IllegalArgumentException.class, () -> PayerDetails.of(null, "12345", null, null));
+        assertEquals(new PayerDetails(null, null, null, "upi"), PayerDetails.of(null, null, null, "upi"));
+        assertThrows(IllegalArgumentException.class, () -> PayerDetails.of(null, null, null, "bitcoin"));
     }
 }
