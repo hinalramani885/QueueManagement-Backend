@@ -20,7 +20,7 @@ public class PasswordResetTokenService {
     private final PasswordResetTokenRepository tokenRepository;
     private final EmailService emailService;
 
-    @Value("${app.frontend-url:https://localhost:5173}")
+    @Value("${app.frontend-url:http://localhost:5173}")
     private String frontendUrl;
 
     public String createAndSendToken(User user) {
