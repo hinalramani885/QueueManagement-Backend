@@ -45,7 +45,8 @@ public class PaymentController {
             @Parameter(description = "Email of the user for whom the token is purchased") @RequestParam String email,
             @Parameter(description = "Role (ADMIN or PROVIDER)") @RequestParam Role role,
             @Parameter(description = "Token type: 1_MONTH, 1_YEAR, or LIFETIME") @RequestParam String tokenType,
-            @Parameter(description = "Admin ID (required only for PROVIDER tokens)") @RequestParam(required = false) String adminId,
+            @Parameter(description = "Admin ID (PROVIDER tokens bought by an admin)") @RequestParam(required = false) String adminId,
+            @Parameter(description = "Place the provider works at (PROVIDER tokens bought by the provider; links the token to that place and its admin)") @RequestParam(required = false) String placeId,
             @Parameter(description = "Payer's full name") @RequestParam(required = false) String payerName,
             @Parameter(description = "Payer's mobile number") @RequestParam(required = false) String payerPhone,
             @Parameter(description = "Payer's UPI ID, e.g. name@okaxis (required when preferredMethod=upi)") @RequestParam(required = false) String upiId,
@@ -53,7 +54,7 @@ public class PaymentController {
     ) throws Exception {
         log.info("createOrder request: email={}, role={}, tokenType={}, adminId={}, method={}", email, role, tokenType, adminId, preferredMethod);
         PayerDetails payer = PayerDetails.of(payerName, payerPhone, upiId, preferredMethod);
-        Order order = paymentService.createOrder(email, role, tokenType, adminId, payer);
+        Order order = paymentService.createOrder(email, role, tokenType, adminId, placeId, payer);
         return new OrderResponse(order.get("id"), order.get("amount"), "INR");
     }
 
@@ -108,7 +109,8 @@ public class PaymentController {
         String adminId = payment.getCreatedByAdminId() != null
                 ? payment.getCreatedByAdminId()
                 : paymentService.getAdminIdFromOrder(orderId);
-        Token token = paymentService.generateToken(payment.getCreatedForEmail(), tokenType, Role.PROVIDER, true, adminId);
+        Token token = paymentService.generateToken(payment.getCreatedForEmail(), tokenType, Role.PROVIDER, true, adminId,
+                payment.getPlaceId());
         paymentService.recordIssuedTokens(payment, List.of(token.getTokenValue()));
         return new TokenResponse(token.getTokenValue());
     }

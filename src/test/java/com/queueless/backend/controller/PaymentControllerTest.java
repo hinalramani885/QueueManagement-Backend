@@ -68,7 +68,7 @@ class PaymentControllerTest {
     @Test
     void createOrder_Success() throws Exception {
         Order mockOrder = mockOrder(orderId, 10000);
-        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull(), eq(PayerDetails.EMPTY)))
+        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull(), isNull(), eq(PayerDetails.EMPTY)))
                 .thenReturn(mockOrder);
 
         mockMvc.perform(post("/api/payment/create-order")
@@ -83,7 +83,7 @@ class PaymentControllerTest {
 
     @Test
     void createOrder_InvalidTokenType() throws Exception {
-        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq("INVALID"), isNull(), eq(PayerDetails.EMPTY)))
+        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq("INVALID"), isNull(), isNull(), eq(PayerDetails.EMPTY)))
                 .thenThrow(new IllegalArgumentException("Invalid token type"));
 
         mockMvc.perform(post("/api/payment/create-order")
@@ -95,7 +95,7 @@ class PaymentControllerTest {
 
     @Test
     void createOrder_RazorpayException() throws Exception {
-        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull(), eq(PayerDetails.EMPTY)))
+        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull(), isNull(), eq(PayerDetails.EMPTY)))
                 .thenThrow(new RazorpayException("Razorpay error"));
 
         mockMvc.perform(post("/api/payment/create-order")
@@ -185,7 +185,7 @@ class PaymentControllerTest {
     void confirmProviderPayment_Success() throws Exception {
         when(paymentService.confirmPayment(orderId, paymentId, signature, Role.PROVIDER, tokenType, providerEmail))
                 .thenReturn(paidPayment(Role.PROVIDER, providerEmail, adminId, 10000));
-        when(paymentService.generateToken(providerEmail, tokenType, Role.PROVIDER, true, adminId))
+        when(paymentService.generateToken(providerEmail, tokenType, Role.PROVIDER, true, adminId, null))
                 .thenReturn(Token.builder().tokenValue("PROVIDER-xyz789").build());
 
         mockMvc.perform(post("/api/payment/confirm-provider")
@@ -203,7 +203,7 @@ class PaymentControllerTest {
         when(paymentService.confirmPayment(orderId, paymentId, signature, Role.PROVIDER, tokenType, providerEmail))
                 .thenReturn(paidPayment(Role.PROVIDER, providerEmail, null, 10000));
         when(paymentService.getAdminIdFromOrder(orderId)).thenReturn(adminId);
-        when(paymentService.generateToken(providerEmail, tokenType, Role.PROVIDER, true, adminId))
+        when(paymentService.generateToken(providerEmail, tokenType, Role.PROVIDER, true, adminId, null))
                 .thenReturn(Token.builder().tokenValue("PROVIDER-xyz789").build());
 
         mockMvc.perform(post("/api/payment/confirm-provider")
@@ -308,7 +308,7 @@ class PaymentControllerTest {
     @Test
     void createOrder_WithPayerDetails_PassesNormalisedDetails() throws Exception {
         PayerDetails expected = new PayerDetails("Asha Patel", "9876543210", "asha.patel@okaxis", "upi");
-        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull(), eq(expected)))
+        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull(), isNull(), eq(expected)))
                 .thenReturn(mockOrder(orderId, 10000));
 
         mockMvc.perform(post("/api/payment/create-order")
@@ -332,13 +332,13 @@ class PaymentControllerTest {
                         .param("upiId", "not-a-upi-id")
                         .param("preferredMethod", "upi"))
                 .andExpect(status().isBadRequest());
-        verify(paymentService, never()).createOrder(anyString(), any(), anyString(), any(), any(PayerDetails.class));
+        verify(paymentService, never()).createOrder(anyString(), any(), anyString(), any(), any(), any(PayerDetails.class));
     }
 
     @Test
     void createOrder_UpiMethodWithoutUpiId_IsAllowed() throws Exception {
         // UPI ID is optional: Razorpay charges UPI by QR / intent since UPI Collect was retired
-        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull(),
+        when(paymentService.createOrder(eq(email), eq(Role.ADMIN), eq(tokenType), isNull(), isNull(),
                 eq(new PayerDetails(null, null, null, "upi"))))
                 .thenReturn(mockOrder(orderId, 10000));
         mockMvc.perform(post("/api/payment/create-order")
@@ -383,6 +383,38 @@ class PaymentControllerTest {
                 .when(paymentService).recordFailure(eq("missing"), any(), any());
         mockMvc.perform(post("/api/payment/failed").param("orderId", "missing"))
                 .andExpect(status().isNotFound());
+    }
+
+    @Test
+    void createOrder_ProviderSelfPurchase_PassesPlaceId() throws Exception {
+        when(paymentService.createOrder(eq(providerEmail), eq(Role.PROVIDER), eq(tokenType), isNull(), eq("place1"),
+                eq(PayerDetails.EMPTY)))
+                .thenReturn(mockOrder(orderId, 10000));
+        mockMvc.perform(post("/api/payment/create-order")
+                        .param("email", providerEmail)
+                        .param("role", Role.PROVIDER.name())
+                        .param("tokenType", tokenType)
+                        .param("placeId", "place1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.orderId").value(orderId));
+    }
+
+    @Test
+    void confirmProviderPayment_SelfPurchase_TokenBoundToPlace() throws Exception {
+        Payment payment = paidPayment(Role.PROVIDER, providerEmail, adminId, 10000);
+        payment.setPlaceId("place1");
+        when(paymentService.confirmPayment(orderId, paymentId, signature, Role.PROVIDER, tokenType, providerEmail))
+                .thenReturn(payment);
+        when(paymentService.generateToken(providerEmail, tokenType, Role.PROVIDER, true, adminId, "place1"))
+                .thenReturn(Token.builder().tokenValue("PROVIDER-xyz").build());
+        mockMvc.perform(post("/api/payment/confirm-provider")
+                        .param("orderId", orderId)
+                        .param("paymentId", paymentId)
+                        .param("signature", signature)
+                        .param("providerEmail", providerEmail)
+                        .param("tokenType", tokenType))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.tokenValue").value("PROVIDER-xyz"));
     }
 
     // Helper to create a mock Razorpay Order

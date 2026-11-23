@@ -5,6 +5,7 @@ import com.queueless.backend.dto.LoginRequest;
 import com.queueless.backend.dto.RegisterRequest;
 import com.queueless.backend.enums.Role;
 import com.queueless.backend.model.Token;
+import com.queueless.backend.exception.InvalidTokenException;
 import com.queueless.backend.model.User;
 import com.queueless.backend.repository.OtpRepository;
 import com.queueless.backend.repository.TokenRepository;
@@ -408,5 +409,49 @@ class AuthServiceTest {
         // Act & Assert
         RuntimeException exception = assertThrows(RuntimeException.class, () -> authService.login(loginRequest));
         assertEquals("Your account has been disabled. Please contact support.", exception.getMessage());
+    }
+
+    // ===== Self-purchased provider tokens are bound to a place =====
+
+    private Token placeBoundProviderToken() {
+        return Token.builder()
+                .tokenValue("PROVIDER_SELF")
+                .role(Role.PROVIDER)
+                .createdForEmail(registerRequest.getEmail())
+                .expiryDate(LocalDateTime.now().plusDays(30))
+                .isUsed(false)
+                .createdByAdminId("adminOfPlace")
+                .placeId("placeFromToken")
+                .build();
+    }
+
+    @Test
+    void registerProviderWithPlaceBoundTokenUsesTokenPlace() {
+        registerRequest.setRole(Role.PROVIDER);
+        registerRequest.setToken("PROVIDER_SELF");
+        registerRequest.setPlaceId(null);
+        when(userRepository.existsByEmail(registerRequest.getEmail())).thenReturn(false);
+        when(tokenRepository.findByTokenValue("PROVIDER_SELF")).thenReturn(Optional.of(placeBoundProviderToken()));
+        when(passwordEncoder.encode(registerRequest.getPassword())).thenReturn("encodedPassword");
+        when(userRepository.save(any(User.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        authService.register(registerRequest);
+
+        verify(userRepository).save(argThat(user ->
+                "placeFromToken".equals(user.getPlaceId())
+                        && user.getManagedPlaceIds().contains("placeFromToken")
+                        && "adminOfPlace".equals(user.getAdminId())));
+    }
+
+    @Test
+    void registerProviderWithPlaceBoundTokenRejectsOtherPlace() {
+        registerRequest.setRole(Role.PROVIDER);
+        registerRequest.setToken("PROVIDER_SELF");
+        registerRequest.setPlaceId("someOtherPlace");
+        when(userRepository.existsByEmail(registerRequest.getEmail())).thenReturn(false);
+        when(tokenRepository.findByTokenValue("PROVIDER_SELF")).thenReturn(Optional.of(placeBoundProviderToken()));
+
+        assertThrows(InvalidTokenException.class, () -> authService.register(registerRequest));
+        verify(userRepository, never()).save(any(User.class));
     }
 }

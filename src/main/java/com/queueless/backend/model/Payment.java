@@ -49,7 +49,8 @@ public class Payment {
     @Indexed
     private String createdForEmail;
     @Indexed
-    private String createdByAdminId;  // For provider tokens: which admin purchased this token
+    private String createdByAdminId;  // For provider tokens: the admin the provider will belong to
+    private String placeId;           // For self-purchased provider tokens: the place the provider works at
 
     // ---- Payer details entered on the pricing page ----
     private String payerName;

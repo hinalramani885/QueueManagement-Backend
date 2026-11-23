@@ -156,10 +156,18 @@ public class AuthService {
         // For PROVIDER, extract adminId and managed place
         String adminId = null;
         List<String> managedPlaceIds = new ArrayList<>();
+        String placeId = request.getPlaceId() != null && !request.getPlaceId().isBlank() ? request.getPlaceId().trim() : null;
         if (request.getRole() == Role.PROVIDER && token != null) {
             adminId = token.getCreatedByAdminId();
-            if (request.getPlaceId() != null && !request.getPlaceId().isEmpty()) {
-                managedPlaceIds.add(request.getPlaceId());
+            // Self-purchased provider tokens are bound to the place chosen at checkout
+            if (token.getPlaceId() != null) {
+                if (placeId != null && !placeId.equals(token.getPlaceId())) {
+                    throw new InvalidTokenException("This token was bought for a different place");
+                }
+                placeId = token.getPlaceId();
+            }
+            if (placeId != null) {
+                managedPlaceIds.add(placeId);
             }
         }
 
@@ -170,7 +178,7 @@ public class AuthService {
                 .password(passwordEncoder.encode(request.getPassword()))
                 .phoneNumber(request.getPhoneNumber())
                 .role(request.getRole())
-                .placeId(request.getPlaceId())
+                .placeId(request.getRole() == Role.PROVIDER ? placeId : request.getPlaceId())
                 .profileImageUrl(null)
                 .isVerified(false)   // <-- changed: always false
                 .preferences(userPreferences)

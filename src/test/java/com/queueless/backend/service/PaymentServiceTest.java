@@ -39,6 +39,9 @@ class PaymentServiceTest {
     @Mock
     private AuditLogService auditLogService;
 
+    @Mock
+    private com.queueless.backend.repository.PlaceRepository placeRepository;
+
     @InjectMocks
     private PaymentService paymentService;
 
@@ -450,5 +453,57 @@ class PaymentServiceTest {
         assertThrows(IllegalArgumentException.class, () -> PayerDetails.of(null, "12345", null, null));
         assertEquals(new PayerDetails(null, null, null, "upi"), PayerDetails.of(null, null, null, "upi"));
         assertThrows(IllegalArgumentException.class, () -> PayerDetails.of(null, null, null, "bitcoin"));
+    }
+
+    // ================= PROVIDER SELF-PURCHASE ("Be a Provider") =================
+
+    @Test
+    void createOrderForProviderWithPlaceUsesPlaceAdmin() throws Exception {
+        com.queueless.backend.model.Place place = new com.queueless.backend.model.Place();
+        place.setId("place1");
+        place.setAdminId("adminOfPlace");
+        when(placeRepository.findById("place1")).thenReturn(Optional.of(place));
+        OrderClient mockOrderClient = mock(OrderClient.class);
+        Order mockOrder = mock(Order.class);
+        when(mockOrder.get("id")).thenReturn("order_self");
+        when(mockOrderClient.create(any(JSONObject.class))).thenReturn(mockOrder);
+
+        try (MockedConstruction<RazorpayClient> mocked = mockConstruction(RazorpayClient.class,
+                (mock, context) -> mock.orders = mockOrderClient)) {
+            paymentService.createOrder("p@gmail.com", Role.PROVIDER, "1_MONTH", null, "place1", PayerDetails.EMPTY);
+            verify(paymentRepository).save(argThat(p ->
+                    "adminOfPlace".equals(p.getCreatedByAdminId()) && "place1".equals(p.getPlaceId())));
+        }
+    }
+
+    @Test
+    void createOrderForProviderRejectsPlaceOfAnotherAdmin() {
+        com.queueless.backend.model.Place place = new com.queueless.backend.model.Place();
+        place.setId("place1");
+        place.setAdminId("adminOfPlace");
+        when(placeRepository.findById("place1")).thenReturn(Optional.of(place));
+        assertThrows(IllegalArgumentException.class, () ->
+                paymentService.createOrder("p@gmail.com", Role.PROVIDER, "1_MONTH", "someoneElse", "place1", PayerDetails.EMPTY));
+        verify(paymentRepository, never()).save(any());
+    }
+
+    @Test
+    void createOrderForProviderRequiresPlaceOrAdmin() {
+        assertThrows(IllegalArgumentException.class, () ->
+                paymentService.createOrder("p@gmail.com", Role.PROVIDER, "1_MONTH", null, null, PayerDetails.EMPTY));
+    }
+
+    @Test
+    void createOrderForProviderUnknownPlace() {
+        when(placeRepository.findById("missing")).thenReturn(Optional.empty());
+        assertThrows(com.queueless.backend.exception.ResourceNotFoundException.class, () ->
+                paymentService.createOrder("p@gmail.com", Role.PROVIDER, "1_MONTH", null, "missing", PayerDetails.EMPTY));
+    }
+
+    @Test
+    void generateProviderTokenStoresPlace() {
+        Token token = paymentService.generateToken("p@gmail.com", "1_MONTH", Role.PROVIDER, true, "admin1", "place1");
+        assertEquals("place1", token.getPlaceId());
+        assertEquals("admin1", token.getCreatedByAdminId());
     }
 }

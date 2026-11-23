@@ -4,6 +4,8 @@ import com.queueless.backend.dto.PayerDetails;
 import com.queueless.backend.enums.PaymentStatus;
 import com.queueless.backend.exception.ResourceNotFoundException;
 import com.queueless.backend.model.Payment;
+import com.queueless.backend.model.Place;
+import com.queueless.backend.repository.PlaceRepository;
 import com.queueless.backend.enums.Role;
 import com.queueless.backend.model.Token;
 import com.queueless.backend.repository.PaymentRepository;
@@ -38,6 +40,7 @@ public class PaymentService {
     private final PaymentRepository paymentRepository;
     private final TokenRepository tokenRepository;
     private final AuditLogService auditLogService;
+    private final PlaceRepository placeRepository;
 
     @Value("${razorpay.key}")
     private String RAZORPAY_KEY;
@@ -51,7 +54,34 @@ public class PaymentService {
 
     /** Creates a Razorpay order and stores it together with the payer details entered on the pricing page. */
     public Order createOrder(String email, Role role, String tokenType, String adminId, PayerDetails payer) throws Exception {
+        return createOrder(email, role, tokenType, adminId, null, payer);
+    }
+
+    /**
+     * Creates a Razorpay order. For a PROVIDER token bought by the provider themselves ("Be a Provider"),
+     * {@code placeId} is the place they work at: the token is linked to that place and its admin, so the
+     * admin ID never comes from the (unauthenticated) client in that flow.
+     */
+    public Order createOrder(String email, Role role, String tokenType, String adminId, String placeId,
+                             PayerDetails payer) throws Exception {
         PayerDetails details = payer != null ? payer : PayerDetails.EMPTY;
+        String orderPlaceId = null;
+        if (role == Role.PROVIDER) {
+            if (placeId != null && !placeId.isBlank()) {
+                Place place = placeRepository.findById(placeId.trim())
+                        .orElseThrow(() -> new ResourceNotFoundException("Place not found"));
+                if (place.getAdminId() == null) {
+                    throw new IllegalArgumentException("This place has no admin yet");
+                }
+                if (adminId != null && !adminId.isBlank() && !adminId.equals(place.getAdminId())) {
+                    throw new IllegalArgumentException("This place belongs to a different admin");
+                }
+                adminId = place.getAdminId();
+                orderPlaceId = place.getId();
+            } else if (adminId == null || adminId.isBlank()) {
+                throw new IllegalArgumentException("Choose the place you work at");
+            }
+        }
         log.info("Initiating order creation | email={}, role={}, tokenType={}", email, role, tokenType);
 
         RazorpayClient razorpayClient = new RazorpayClient(RAZORPAY_KEY, RAZORPAY_SECRET);
@@ -103,6 +133,7 @@ public class PaymentService {
             if (role == Role.PROVIDER && adminId != null) {
                 notes.put("adminId", adminId);
             }
+            if (orderPlaceId != null) notes.put("placeId", orderPlaceId);
             if (details.name() != null) notes.put("payerName", details.name());
             if (details.upiId() != null) notes.put("upiId", details.upiId());
             if (notes.length() > 0) {
@@ -123,6 +154,7 @@ public class PaymentService {
                     .status(PaymentStatus.CREATED)
                     .createdAt(LocalDateTime.now())
                     .createdByAdminId(role == Role.PROVIDER ? adminId : null)
+                    .placeId(orderPlaceId)
                     .payerName(details.name())
                     .payerPhone(details.phone())
                     .upiId(details.upiId())
@@ -288,6 +320,12 @@ public class PaymentService {
     }
 
     public Token generateToken(String email, String tokenType, Role role, boolean isProviderToken, String adminId) {
+        return generateToken(email, tokenType, role, isProviderToken, adminId, null);
+    }
+
+    /** Generates a registration token; {@code placeId} is set for self-purchased provider tokens. */
+    public Token generateToken(String email, String tokenType, Role role, boolean isProviderToken, String adminId,
+                               String placeId) {
         log.info("Generating token | email={}, role={}, tokenType={}, isProviderToken={}, adminId={}", email, role, tokenType, isProviderToken, adminId);
 
         LocalDateTime expiry;
@@ -320,6 +358,7 @@ public class PaymentService {
                     .isProviderToken(isProviderToken)
                     .createdByAdminId(adminId)
                     .createdAt(LocalDateTime.now())
+                    .placeId(role == Role.PROVIDER ? placeId : null)
                     .build();
 
             if (role == Role.PROVIDER && adminId != null) {

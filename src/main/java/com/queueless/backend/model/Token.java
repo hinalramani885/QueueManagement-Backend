@@ -28,4 +28,5 @@ public class Token {
     private LocalDateTime createdAt;
     // New fields to track provider token ownership
     private String createdByAdminId; // For PROVIDER tokens: which admin purchased this token
+    private String placeId;          // For self-purchased PROVIDER tokens: the place the provider works at
 }
