@@ -10,11 +10,11 @@
         <relativePath/> <!-- lookup parent from repository -->
     </parent>
 
-    <groupId>com.queueless</groupId>
+    <groupId>com.qflow</groupId>
     <artifactId>backend</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>backend</name>
-    <description>Queueless Project Backend</description>
+    <description>QFlow Project Backend</description>
 
     <properties>
         <java.version>25</java.version>
