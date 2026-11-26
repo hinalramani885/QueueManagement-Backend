@@ -624,7 +624,7 @@ public class QueueService {
             throw new RuntimeException("Place not found");
         }
 
-        if (!place.getAdminId().equals(provider.getAdminId()) &&
+        if (!(place.getAdminId() != null && place.getAdminId().equals(provider.getAdminId())) &&
                 (provider.getManagedPlaceIds() == null || !provider.getManagedPlaceIds().contains(placeId))) {
             throw new RuntimeException("Provider does not have access to this place");
         }
@@ -671,7 +671,7 @@ public class QueueService {
             throw new RuntimeException("Place not found");
         }
 
-        if (!place.getAdminId().equals(provider.getAdminId()) &&
+        if (!(place.getAdminId() != null && place.getAdminId().equals(provider.getAdminId())) &&
                 (provider.getManagedPlaceIds() == null || !provider.getManagedPlaceIds().contains(placeId))) {
             throw new RuntimeException("Provider does not have access to this place");
         }

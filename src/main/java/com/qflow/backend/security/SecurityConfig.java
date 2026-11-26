@@ -193,14 +193,18 @@ public class SecurityConfig {
                         .requestMatchers("/api/queues/*/complete-token").hasRole("PROVIDER")
                         .requestMatchers("/api/queues/*/activate").hasAnyRole("PROVIDER", "ADMIN")
                         .requestMatchers("/api/queues/*/deactivate").hasAnyRole("PROVIDER", "ADMIN")
+                        // Places & services: admins and providers may create/change them; ownership is checked
+                        // per item in the controllers (CatalogAccessService). GETs above stay public.
+                        .requestMatchers(HttpMethod.GET, "/api/places/provider/**").hasRole("PROVIDER")
+                        .requestMatchers(HttpMethod.GET, "/api/services/admin/**").hasRole("ADMIN")
                         // Admin endpoints
                         .requestMatchers("/api/admin/**").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.POST, "/api/places").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/api/places/**").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.DELETE, "/api/places/**").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.POST, "/api/services").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/api/services/**").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.DELETE, "/api/services/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/api/places").hasAnyRole("ADMIN", "PROVIDER")
+                        .requestMatchers(HttpMethod.PUT, "/api/places/**").hasAnyRole("ADMIN", "PROVIDER")
+                        .requestMatchers(HttpMethod.DELETE, "/api/places/**").hasAnyRole("ADMIN", "PROVIDER")
+                        .requestMatchers(HttpMethod.POST, "/api/services").hasAnyRole("ADMIN", "PROVIDER")
+                        .requestMatchers(HttpMethod.PUT, "/api/services/**").hasAnyRole("ADMIN", "PROVIDER")
+                        .requestMatchers(HttpMethod.DELETE, "/api/services/**").hasAnyRole("ADMIN", "PROVIDER")
                         // All other requests need authentication
                         .anyRequest().authenticated()
                 )

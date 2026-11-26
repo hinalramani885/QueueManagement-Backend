@@ -25,9 +25,19 @@ public class PlaceService {
     private final PlaceRepository placeRepository;
     private final AuditLogService auditLogService;
 
-    @CacheEvict(value = {"places", "placesByAdmin"}, allEntries = true)
+    @CacheEvict(value = {"places", "placesByAdmin", "services", "servicesByPlace", "queues", "queuesByPlace"}, allEntries = true)
     public Place createPlace(PlaceDTO placeDTO) {
-        log.debug("Creating new place: {}", placeDTO);
+        // Admin flow (unchanged): the admin in the DTO is the creator
+        return createPlace(placeDTO, placeDTO.getAdminId(), "ADMIN");
+    }
+
+    /**
+     * Creates a place. {@code placeDTO.adminId} is the owning admin (for a provider: the provider's admin), and
+     * {@code creatorId}/{@code creatorRole} record who created it. Clears place, service and queue caches.
+     */
+    @CacheEvict(value = {"places", "placesByAdmin", "services", "servicesByPlace", "queues", "queuesByPlace"}, allEntries = true)
+    public Place createPlace(PlaceDTO placeDTO, String creatorId, String creatorRole) {
+        log.debug("Creating new place: {} by {} ({})", placeDTO, creatorId, creatorRole);
 
         Place place = new Place();
         place.setName(placeDTO.getName());
@@ -52,12 +62,16 @@ public class PlaceService {
         place.setContactInfo(placeDTO.getContactInfo());
         place.setBusinessHours(placeDTO.getBusinessHours());
         place.setIsActive(placeDTO.getIsActive() != null ? placeDTO.getIsActive() : true);
+        place.setCreatedBy(creatorId);
+        place.setCreatedByRole(creatorRole);
 
         Place savedPlace = placeRepository.save(place); // save first
 
         Map<String, Object> details = new HashMap<>();
         details.put("placeId", savedPlace.getId());
         details.put("adminId", placeDTO.getAdminId());
+        details.put("createdBy", creatorId);
+        details.put("createdByRole", creatorRole);
         auditLogService.logEvent("PLACE_CREATED",
                 "Place created: " + placeDTO.getName(),
                 details);
@@ -85,7 +99,7 @@ public class PlaceService {
 
     public boolean isPlaceOwnedByAdmin(String placeId, String adminId) {
         Optional<Place> place = placeRepository.findById(placeId);
-        return place.isPresent() && place.get().getAdminId().equals(adminId);
+        return place.isPresent() && adminId != null && adminId.equals(place.get().getAdminId());
     }
 
     public List<Place> getPlacesByType(String type) {
@@ -103,7 +117,7 @@ public class PlaceService {
         return places;
     }
 
-    @CacheEvict(value = {"places", "placesByAdmin"}, allEntries = true)
+    @CacheEvict(value = {"places", "placesByAdmin", "services", "servicesByPlace", "queues", "queuesByPlace"}, allEntries = true)
     public Place updatePlace(String id, PlaceDTO placeDTO) {
         log.info("Updating place with ID: {}", id);
         Place place = getPlaceById(id);
@@ -124,15 +138,25 @@ public class PlaceService {
 
         Place updated = placeRepository.save(place);
         log.info("Place updated successfully with ID: {}", id);
+
+        Map<String, Object> details = new HashMap<>();
+        details.put("placeId", id);
+        details.put("adminId", updated.getAdminId());
+        auditLogService.logEvent("PLACE_UPDATED", "Place updated: " + updated.getName(), details);
         return updated;
     }
 
-    @CacheEvict(value = {"places", "placesByAdmin"}, allEntries = true)
+    @CacheEvict(value = {"places", "placesByAdmin", "services", "servicesByPlace", "queues", "queuesByPlace"}, allEntries = true)
     public void deletePlace(String id) {
         log.warn("Deleting place with ID: {}", id);
         Place place = getPlaceById(id);
         placeRepository.delete(place);
         log.info("Place deleted successfully with ID: {}", id);
+
+        Map<String, Object> details = new HashMap<>();
+        details.put("placeId", id);
+        details.put("adminId", place.getAdminId());
+        auditLogService.logEvent("PLACE_DELETED", "Place deleted: " + place.getName(), details);
     }
 
     public List<Place> getAllPlaces() {

@@ -20,10 +20,21 @@ public class ServiceService {
 
     private final ServiceRepository serviceRepository;
     private final PlaceService placeService;
+    private final AuditLogService auditLogService;
 
-    @CacheEvict(allEntries = true)
+    @CacheEvict(value = {"places", "placesByAdmin", "services", "servicesByPlace", "queues", "queuesByPlace"}, allEntries = true)
     public Service createService(ServiceDTO serviceDTO) {
-        log.debug("Creating new service: {}", serviceDTO);
+        // Admin flow (unchanged): creator details are recorded by the overload below when known
+        return createService(serviceDTO, null, null, null);
+    }
+
+    /**
+     * Creates a service under {@code serviceDTO.placeId}, recording the creator and the owning admin.
+     * Clears place, service and queue caches so admin and provider lists update immediately.
+     */
+    @CacheEvict(value = {"places", "placesByAdmin", "services", "servicesByPlace", "queues", "queuesByPlace"}, allEntries = true)
+    public Service createService(ServiceDTO serviceDTO, String creatorId, String creatorRole, String adminId) {
+        log.debug("Creating new service: {} by {} ({})", serviceDTO, creatorId, creatorRole);
 
         Service service = new Service();
         service.setPlaceId(serviceDTO.getPlaceId());
@@ -33,8 +44,13 @@ public class ServiceService {
         service.setSupportsGroupToken(serviceDTO.getSupportsGroupToken());
         service.setEmergencySupport(serviceDTO.getEmergencySupport());
         service.setIsActive(serviceDTO.getIsActive());
+        service.setCreatedBy(creatorId);
+        service.setCreatedByRole(creatorRole);
+        service.setAdminId(adminId);
 
         Service saved = serviceRepository.save(service);
+        auditLogService.logEvent("SERVICE_CREATED", "Service created: " + saved.getName(),
+                auditDetails(saved, creatorRole));
         log.info("Service saved with ID: {} – cache cleared for services and servicesByPlace", saved.getId());
         return saved;
     }
@@ -66,7 +82,7 @@ public class ServiceService {
         return services;
     }
 
-    @CacheEvict(allEntries = true)
+    @CacheEvict(value = {"places", "placesByAdmin", "services", "servicesByPlace", "queues", "queuesByPlace"}, allEntries = true)
     public Service updateService(String id, ServiceDTO serviceDTO) {
         log.info("Updating service with ID: {} – will clear cache after update", id);
         Service service = getServiceById(id);
@@ -80,15 +96,35 @@ public class ServiceService {
 
         Service updated = serviceRepository.save(service);
         log.info("Service updated successfully with ID: {} – cache cleared", id);
+        auditLogService.logEvent("SERVICE_UPDATED", "Service updated: " + updated.getName(), auditDetails(updated, null));
         return updated;
     }
 
-    @CacheEvict(allEntries = true)
+    @CacheEvict(value = {"places", "placesByAdmin", "services", "servicesByPlace", "queues", "queuesByPlace"}, allEntries = true)
     public void deleteService(String id) {
         log.warn("Deleting service with ID: {} – will clear cache after deletion", id);
         Service service = getServiceById(id);
         serviceRepository.delete(service);
         log.info("Service deleted successfully with ID: {} – cache cleared", id);
+        auditLogService.logEvent("SERVICE_DELETED", "Service deleted: " + service.getName(), auditDetails(service, null));
+    }
+
+    /** All services under the given places (used for the admin's catalog list). */
+    public List<Service> getServicesByPlaceIds(java.util.Collection<String> placeIds) {
+        if (placeIds == null || placeIds.isEmpty()) {
+            return List.of();
+        }
+        return serviceRepository.findByPlaceIdIn(placeIds);
+    }
+
+    private static java.util.Map<String, Object> auditDetails(Service service, String role) {
+        java.util.Map<String, Object> details = new java.util.HashMap<>();
+        details.put("serviceId", service.getId());
+        details.put("placeId", service.getPlaceId());
+        if (service.getAdminId() != null) details.put("adminId", service.getAdminId());
+        if (service.getCreatedBy() != null) details.put("createdBy", service.getCreatedBy());
+        if (role != null) details.put("role", role);
+        return details;
     }
 
     public List<Service> getAllServices() {

@@ -26,6 +26,9 @@ class ServiceServiceTest {
     @Mock
     private PlaceService placeService;
 
+    @Mock
+    private AuditLogService auditLogService;
+
     @InjectMocks
     private ServiceService serviceService;
 
@@ -197,5 +200,33 @@ class ServiceServiceTest {
 
         assertEquals(1, result.size());
         assertEquals(serviceId, result.get(0).getId());
+    }
+
+    // ===== ownership (provider catalog) =====
+
+    @Test
+    void createServiceRecordsCreatorOwnerAndAudit() {
+        ServiceDTO dto = new ServiceDTO();
+        dto.setPlaceId("place1");
+        dto.setName("Consultation");
+        dto.setAverageServiceTime(10);
+        dto.setSupportsGroupToken(false);
+        dto.setEmergencySupport(false);
+        dto.setIsActive(true);
+        when(serviceRepository.save(any(Service.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Service saved = serviceService.createService(dto, "prov1", "PROVIDER", "admin1");
+
+        assertEquals("prov1", saved.getCreatedBy());
+        assertEquals("PROVIDER", saved.getCreatedByRole());
+        assertEquals("admin1", saved.getAdminId());
+        verify(auditLogService).logEvent(eq("SERVICE_CREATED"), anyString(),
+                argThat(d -> "prov1".equals(d.get("createdBy")) && "admin1".equals(d.get("adminId"))));
+    }
+
+    @Test
+    void servicesByPlaceIdsHandlesEmptyInput() {
+        assertTrue(serviceService.getServicesByPlaceIds(List.of()).isEmpty());
+        verifyNoInteractions(serviceRepository);
     }
 }

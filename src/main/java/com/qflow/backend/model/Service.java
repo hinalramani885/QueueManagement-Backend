@@ -39,4 +39,16 @@ public class Service {
 
     @Field("isActive")
     private Boolean isActive = true;
+
+    // ---- Ownership (null on services created before providers could create services) ----
+    @Field("createdBy")
+    @Indexed
+    private String createdBy;        // user id of the creator (admin or provider)
+
+    @Field("createdByRole")
+    private String createdByRole;    // "ADMIN" or "PROVIDER"
+
+    @Field("adminId")
+    @Indexed
+    private String adminId;          // admin who owns the place this service belongs to
 }

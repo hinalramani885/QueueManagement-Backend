@@ -39,9 +39,17 @@ public class PlaceDTO {
     @Schema(description = "Geographic coordinates [longitude, latitude]", example = "[10.0, 20.0]", requiredMode = Schema.RequiredMode.REQUIRED)
     private double[] location;
 
-    @NotBlank(message = "Admin ID is required")
     @Schema(description = "ID of the admin who owns this place", example = "507f1f77bcf86cd799439012", requiredMode = Schema.RequiredMode.REQUIRED)
     private String adminId;
+
+    @Schema(description = "ID of the user who created the place (set by the server)", accessMode = Schema.AccessMode.READ_ONLY)
+    private String createdBy;
+
+    @Schema(description = "Role of the creator: ADMIN or PROVIDER (set by the server)", accessMode = Schema.AccessMode.READ_ONLY, example = "PROVIDER")
+    private String createdByRole;
+
+    @Schema(description = "Name of the creator (set by the server)", accessMode = Schema.AccessMode.READ_ONLY)
+    private String createdByName;
 
     @Schema(description = "List of image URLs")
     private List<String> imageUrls;
@@ -79,6 +87,9 @@ public class PlaceDTO {
             });
         }
         dto.setAdminId(place.getAdminId());
+        // Places created before ownership tracking were always created by their admin
+        dto.setCreatedBy(place.getCreatedBy() != null ? place.getCreatedBy() : place.getAdminId());
+        dto.setCreatedByRole(place.getCreatedByRole() != null ? place.getCreatedByRole() : "ADMIN");
         dto.setImageUrls(place.getImageUrls());
         dto.setDescription(place.getDescription());
         dto.setRating(place.getRating());

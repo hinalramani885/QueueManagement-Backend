@@ -4,6 +4,9 @@ import com.qflow.backend.dto.PlaceDTO;
 import com.qflow.backend.model.Place;
 import com.qflow.backend.service.PlaceService;
 import com.qflow.backend.security.annotations.AdminOnly;
+import com.qflow.backend.security.annotations.AdminOrProviderOnly;
+import com.qflow.backend.security.annotations.ProviderOnly;
+import com.qflow.backend.service.CatalogAccessService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -37,39 +40,101 @@ import java.util.stream.Collectors;
 public class PlaceController {
 
     private final PlaceService placeService;
+    private final CatalogAccessService catalogAccessService;
 
     @PostMapping
-    @AdminOnly
-    @Operation(summary = "Create a new place", description = "Creates a new place. Only accessible by admin.")
+    @AdminOrProviderOnly
+    @Operation(summary = "Create a new place",
+            description = "Creates a new place. Admins create places they own (adminId must be their own id or empty). "
+                    + "Providers create places owned by their admin, so the place also appears in that admin's lists; "
+                    + "the provider is recorded as the creator.")
     @ApiResponse(responseCode = "200", description = "Place created successfully",
             content = @Content(schema = @Schema(implementation = PlaceDTO.class)))
+    @ApiResponse(responseCode = "400", description = "Validation error, or the provider account is not linked to an admin")
     @ApiResponse(responseCode = "401", description = "Unauthorized")
     @ApiResponse(responseCode = "403", description = "Forbidden – admin ID mismatch")
     @ApiResponse(responseCode = "500", description = "Internal server error")
     public ResponseEntity<PlaceDTO> createPlace(@Valid @RequestBody PlaceDTO placeDTO) {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        String adminId = authentication.getName();
-
-        if (adminId == null) {
-            log.error("Admin ID not found in authentication");
+        CatalogAccessService.Actor actor = currentActor();
+        if (actor == null) {
+            log.error("Authenticated ADMIN or PROVIDER not found for createPlace");
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        log.info("Request received to create place: {} by admin: {}", placeDTO, adminId);
+        log.info("Request received to create place: {} by {} {}", placeDTO, actor.role(), actor.id());
 
-        if (!placeDTO.getAdminId().equals(adminId)) {
-            log.warn("Unauthorized attempt to create place for adminId={} by {}", placeDTO.getAdminId(), adminId);
-            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        if (actor.isAdmin()) {
+            if (placeDTO.getAdminId() != null && !placeDTO.getAdminId().isBlank() && !placeDTO.getAdminId().equals(actor.id())) {
+                log.warn("Unauthorized attempt to create place for adminId={} by {}", placeDTO.getAdminId(), actor.id());
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+            }
+            placeDTO.setAdminId(actor.id());
+        } else {
+            // The provider's admin owns the place, so it shows up in the admin's dashboard automatically
+            String owningAdminId = catalogAccessService.owningAdminIdForProvider(actor.id()).orElse(null);
+            if (owningAdminId == null) {
+                throw new IllegalArgumentException("Your provider account is not linked to an admin, so places cannot be created yet");
+            }
+            placeDTO.setAdminId(owningAdminId);
         }
 
         try {
-            Place place = placeService.createPlace(placeDTO);
+            Place place = placeService.createPlace(placeDTO, actor.id(), actor.role().name());
+            if (actor.isProvider()) {
+                catalogAccessService.assignCreatedPlaceToProvider(actor.id(), place.getId());
+            }
             log.info("Place created successfully with ID: {}", place.getId());
             return ResponseEntity.ok(PlaceDTO.fromEntity(place));
         } catch (Exception e) {
             log.error("Error creating place: {}", e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
+    }
+
+    @GetMapping("/provider/my-places")
+    @ProviderOnly
+    @Operation(summary = "Get places the provider can manage",
+            description = "Returns the places the authenticated provider created plus the places assigned to them, with creator details.")
+    @ApiResponse(responseCode = "200", description = "List of places",
+            content = @Content(schema = @Schema(implementation = PlaceDTO.class)))
+    @ApiResponse(responseCode = "401", description = "Unauthorized")
+    public ResponseEntity<List<PlaceDTO>> getProviderManageablePlaces() {
+        CatalogAccessService.Actor actor = currentActor();
+        if (actor == null) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
+        List<PlaceDTO> places = catalogAccessService.manageablePlacesForProvider(actor.id()).stream()
+                .map(PlaceDTO::fromEntity)
+                .collect(Collectors.toList());
+        log.info("Returning {} manageable places for provider {}", places.size(), actor.id());
+        return ResponseEntity.ok(catalogAccessService.withCreatorDetails(places));
+    }
+
+    /**
+     * Returns null when the actor may change the place, otherwise the 403/404 response. Admins keep the original
+     * rule (they own the place); providers may change places they created or that are assigned to them.
+     */
+    private <T> ResponseEntity<T> checkPlaceAccess(String placeId, CatalogAccessService.Actor actor, String action) {
+        if (actor.isAdmin()) {
+            if (!placeService.isPlaceOwnedByAdmin(placeId, actor.id())) {
+                log.warn("Unauthorized attempt to {} place={} by admin {}", action, placeId, actor.id());
+                return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+            }
+            return null;
+        }
+        Place place = catalogAccessService.findPlace(placeId).orElse(null);
+        if (place == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+        if (!catalogAccessService.canManagePlace(place, actor)) {
+            log.warn("Unauthorized attempt to {} place={} by provider {}", action, placeId, actor.id());
+            return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+        }
+        return null;
+    }
+
+    private CatalogAccessService.Actor currentActor() {
+        return catalogAccessService.actorOf(SecurityContextHolder.getContext().getAuthentication()).orElse(null);
     }
 
     @GetMapping("/{id}")
@@ -91,7 +156,7 @@ public class PlaceController {
 
     @GetMapping("/admin/my-places")
     @AdminOnly
-    @Operation(summary = "Get my places", description = "Returns all places managed by the authenticated admin.")
+    @Operation(summary = "Get my places", description = "Returns all places owned by the authenticated admin, including places created by the admin's providers, with creator details (createdBy, createdByRole, createdByName).")
     @ApiResponse(responseCode = "200", description = "List of places",
             content = @Content(schema = @Schema(implementation = PlaceDTO.class)))
     @ApiResponse(responseCode = "401", description = "Unauthorized")
@@ -106,7 +171,8 @@ public class PlaceController {
 
         try {
             List<Place> places = placeService.getPlacesByAdminId(adminId);
-            return ResponseEntity.ok(places.stream().map(PlaceDTO::fromEntity).collect(Collectors.toList()));
+            return ResponseEntity.ok(catalogAccessService.withCreatorDetails(
+                    places.stream().map(PlaceDTO::fromEntity).collect(Collectors.toList())));
         } catch (Exception e) {
             log.error("Error fetching places for admin: {}", e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
@@ -172,28 +238,27 @@ public class PlaceController {
     }
 
     @PutMapping("/{id}")
-    @AdminOnly
-    @Operation(summary = "Update a place", description = "Updates an existing place. Only the owning admin can update.")
+    @AdminOrProviderOnly
+    @Operation(summary = "Update a place", description = "Updates an existing place. Admins can update every place they own "
+            + "(including places created by their providers); providers can update places they created or that are assigned to them.")
     @ApiResponse(responseCode = "200", description = "Place updated",
             content = @Content(schema = @Schema(implementation = PlaceDTO.class)))
     @ApiResponse(responseCode = "401", description = "Unauthorized")
     @ApiResponse(responseCode = "403", description = "Forbidden – not the owner")
     @ApiResponse(responseCode = "404", description = "Place not found")
     public ResponseEntity<PlaceDTO> updatePlace(@PathVariable String id, @Valid @RequestBody PlaceDTO placeDTO) {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        String adminId = authentication.getName();
-
-        if (adminId == null) {
-            log.error("Admin ID not found in authentication");
+        CatalogAccessService.Actor actor = currentActor();
+        if (actor == null) {
+            log.error("Authenticated ADMIN or PROVIDER not found for updatePlace");
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        log.info("Updating place with ID: {} | Data: {} by admin: {}", id, placeDTO, adminId);
+        log.info("Updating place with ID: {} | Data: {} by {} {}", id, placeDTO, actor.role(), actor.id());
 
         try {
-            if (!placeService.isPlaceOwnedByAdmin(id, adminId)) {
-                log.warn("Unauthorized attempt to update place={} by {}", id, adminId);
-                return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+            ResponseEntity<PlaceDTO> denied = checkPlaceAccess(id, actor, "update");
+            if (denied != null) {
+                return denied;
             }
 
             Place place = placeService.updatePlace(id, placeDTO);
@@ -206,27 +271,26 @@ public class PlaceController {
     }
 
     @DeleteMapping("/{id}")
-    @AdminOnly
-    @Operation(summary = "Delete a place", description = "Deletes an existing place. Only the owning admin can delete.")
+    @AdminOrProviderOnly
+    @Operation(summary = "Delete a place", description = "Deletes an existing place. Admins can delete every place they own "
+            + "(including places created by their providers); providers can delete places they created or that are assigned to them.")
     @ApiResponse(responseCode = "200", description = "Place deleted")
     @ApiResponse(responseCode = "401", description = "Unauthorized")
     @ApiResponse(responseCode = "403", description = "Forbidden – not the owner")
     @ApiResponse(responseCode = "404", description = "Place not found")
     public ResponseEntity<Void> deletePlace(@PathVariable String id) {
-        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
-        String adminId = authentication.getName();
-
-        if (adminId == null) {
-            log.error("Admin ID not found in authentication");
+        CatalogAccessService.Actor actor = currentActor();
+        if (actor == null) {
+            log.error("Authenticated ADMIN or PROVIDER not found for deletePlace");
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        log.warn("Request received to delete place with ID: {} by admin: {}", id, adminId);
+        log.warn("Request received to delete place with ID: {} by {} {}", id, actor.role(), actor.id());
 
         try {
-            if (!placeService.isPlaceOwnedByAdmin(id, adminId)) {
-                log.warn("Unauthorized attempt to delete place={} by {}", id, adminId);
-                return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+            ResponseEntity<Void> denied = checkPlaceAccess(id, actor, "delete");
+            if (denied != null) {
+                return denied;
             }
 
             placeService.deletePlace(id);

@@ -45,6 +45,21 @@ public class ServiceDTO {
     @Schema(description = "Whether the service is active", example = "true" , requiredMode = Schema.RequiredMode.REQUIRED)
     private Boolean isActive;
 
+    @Schema(description = "Admin who owns the place of this service (set by the server)", accessMode = Schema.AccessMode.READ_ONLY)
+    private String adminId;
+
+    @Schema(description = "Name of the place this service belongs to (set by the server)", accessMode = Schema.AccessMode.READ_ONLY)
+    private String placeName;
+
+    @Schema(description = "ID of the user who created the service (set by the server)", accessMode = Schema.AccessMode.READ_ONLY)
+    private String createdBy;
+
+    @Schema(description = "Role of the creator: ADMIN or PROVIDER (set by the server)", accessMode = Schema.AccessMode.READ_ONLY, example = "PROVIDER")
+    private String createdByRole;
+
+    @Schema(description = "Name of the creator (set by the server)", accessMode = Schema.AccessMode.READ_ONLY)
+    private String createdByName;
+
     public static ServiceDTO fromEntity(Service service) {
         ServiceDTO dto = new ServiceDTO();
         dto.setId(service.getId());
@@ -55,6 +70,10 @@ public class ServiceDTO {
         dto.setSupportsGroupToken(service.getSupportsGroupToken());
         dto.setEmergencySupport(service.getEmergencySupport());
         dto.setIsActive(service.getIsActive());
+        dto.setAdminId(service.getAdminId());
+        dto.setCreatedBy(service.getCreatedBy());
+        // Services created before ownership tracking were always created by an admin
+        dto.setCreatedByRole(service.getCreatedByRole() != null ? service.getCreatedByRole() : "ADMIN");
         return dto;
     }
 }

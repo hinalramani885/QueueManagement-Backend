@@ -7,6 +7,13 @@ import com.qflow.backend.dto.ServiceDTO;
 import com.qflow.backend.model.Service;
 import com.qflow.backend.service.PlaceService;
 import com.qflow.backend.service.ServiceService;
+import com.qflow.backend.service.CatalogAccessService;
+import com.qflow.backend.enums.Role;
+import com.qflow.backend.model.Place;
+import com.qflow.backend.model.User;
+import com.qflow.backend.repository.PlaceRepository;
+import com.qflow.backend.repository.ServiceRepository;
+import com.qflow.backend.repository.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -28,9 +35,24 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @WebMvcTest(controllers = ServiceController.class,
         properties = "spring.autoconfigure.exclude=org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration")
-@Import({RateLimitConfig.class, TestSecurityConfig.class})
+@Import({RateLimitConfig.class, TestSecurityConfig.class, CatalogAccessService.class, ServiceControllerTest.MethodSecurityConfig.class})
 @AutoConfigureMockMvc
 class ServiceControllerTest {
+
+    /** Enables @PreAuthorize-based annotations such as @AdminOrProviderOnly in this slice test. */
+    @org.springframework.boot.test.context.TestConfiguration
+    @org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity
+    static class MethodSecurityConfig {
+    }
+
+    @MockitoBean
+    private UserRepository userRepository;
+
+    @MockitoBean
+    private PlaceRepository placeRepository;
+
+    @MockitoBean
+    private ServiceRepository serviceRepository;
 
     @Autowired
     private MockMvc mockMvc;
@@ -82,7 +104,7 @@ class ServiceControllerTest {
         Service service = createTestService();
 
         when(placeService.isPlaceOwnedByAdmin(placeId, adminId)).thenReturn(true);
-        when(serviceService.createService(any(ServiceDTO.class))).thenReturn(service);
+        when(serviceService.createService(any(ServiceDTO.class), anyString(), anyString(), anyString())).thenReturn(service);
 
         mockMvc.perform(post("/api/services")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -111,7 +133,7 @@ class ServiceControllerTest {
         ServiceDTO request = createTestServiceDTO();
 
         when(placeService.isPlaceOwnedByAdmin(placeId, adminId)).thenReturn(true);
-        when(serviceService.createService(any(ServiceDTO.class))).thenThrow(new RuntimeException("DB error"));
+        when(serviceService.createService(any(ServiceDTO.class), anyString(), anyString(), anyString())).thenThrow(new RuntimeException("DB error"));
 
         mockMvc.perform(post("/api/services")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -252,5 +274,149 @@ class ServiceControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$[0].id").value(serviceId))
                 .andExpect(jsonPath("$[0].name").value("Test Service"));
+    }
+
+    // ==================== PROVIDER CATALOG (services created by providers) ====================
+
+    private static final String providerId = "provider1";
+
+    private User provider(List<String> managed) {
+        User u = new User();
+        u.setId(providerId);
+        u.setName("Priya Provider");
+        u.setRole(Role.PROVIDER);
+        u.setAdminId(adminId);
+        u.setManagedPlaceIds(new java.util.ArrayList<>(managed));
+        return u;
+    }
+
+    private Place place(String id, String createdBy) {
+        Place p = new Place();
+        p.setId(id);
+        p.setName("Place " + id);
+        p.setAdminId(adminId);
+        p.setCreatedBy(createdBy);
+        p.setCreatedByRole(adminId.equals(createdBy) ? "ADMIN" : "PROVIDER");
+        return p;
+    }
+
+    @Test
+    @WithMockUser(username = providerId, roles = {"PROVIDER"})
+    void providerCreatesServiceUnderOwnPlace() throws Exception {
+        when(placeRepository.findById(placeId)).thenReturn(java.util.Optional.of(place(placeId, providerId)));
+        when(userRepository.findById(providerId)).thenReturn(java.util.Optional.of(provider(List.of())));
+        Service created = createTestService();
+        created.setCreatedBy(providerId);
+        created.setCreatedByRole("PROVIDER");
+        created.setAdminId(adminId);
+        when(serviceService.createService(any(ServiceDTO.class), eq(providerId), eq("PROVIDER"), eq(adminId))).thenReturn(created);
+
+        mockMvc.perform(post("/api/services")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(createTestServiceDTO())))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.createdBy").value(providerId))
+                .andExpect(jsonPath("$.createdByRole").value("PROVIDER"))
+                .andExpect(jsonPath("$.adminId").value(adminId));
+    }
+
+    @Test
+    @WithMockUser(username = providerId, roles = {"PROVIDER"})
+    void providerCannotCreateServiceUnderOtherPlace() throws Exception {
+        when(placeRepository.findById(placeId)).thenReturn(java.util.Optional.of(place(placeId, "provider2")));
+        when(userRepository.findById(providerId)).thenReturn(java.util.Optional.of(provider(List.of())));
+
+        mockMvc.perform(post("/api/services")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(createTestServiceDTO())))
+                .andExpect(status().isForbidden());
+        org.mockito.Mockito.verify(serviceService, org.mockito.Mockito.never())
+                .createService(any(ServiceDTO.class), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    @WithMockUser(username = providerId, roles = {"PROVIDER"})
+    void providerCreatesServiceUnderAssignedPlace() throws Exception {
+        when(placeRepository.findById(placeId)).thenReturn(java.util.Optional.of(place(placeId, adminId)));
+        when(userRepository.findById(providerId)).thenReturn(java.util.Optional.of(provider(List.of(placeId))));
+        when(serviceService.createService(any(ServiceDTO.class), eq(providerId), eq("PROVIDER"), eq(adminId)))
+                .thenReturn(createTestService());
+
+        mockMvc.perform(post("/api/services")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(createTestServiceDTO())))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @WithMockUser(username = providerId, roles = {"PROVIDER"})
+    void providerCreateServiceUnknownPlace_NotFound() throws Exception {
+        when(placeRepository.findById(placeId)).thenReturn(java.util.Optional.empty());
+        mockMvc.perform(post("/api/services")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(createTestServiceDTO())))
+                .andExpect(status().isNotFound());
+    }
+
+    @Test
+    @WithMockUser(username = providerId, roles = {"PROVIDER"})
+    void providerUpdatesOwnService() throws Exception {
+        Service own = createTestService();
+        own.setCreatedBy(providerId);
+        when(serviceRepository.findById(serviceId)).thenReturn(java.util.Optional.of(own));
+        when(placeRepository.findById(placeId)).thenReturn(java.util.Optional.of(place(placeId, adminId)));
+        when(serviceService.updateService(eq(serviceId), any(ServiceDTO.class))).thenReturn(own);
+
+        mockMvc.perform(put("/api/services/" + serviceId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(createTestServiceDTO())))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    @WithMockUser(username = providerId, roles = {"PROVIDER"})
+    void providerCannotDeleteServiceOfAnotherProvidersPlace() throws Exception {
+        Service other = createTestService();
+        other.setCreatedBy("provider2");
+        when(serviceRepository.findById(serviceId)).thenReturn(java.util.Optional.of(other));
+        when(placeRepository.findById(placeId)).thenReturn(java.util.Optional.of(place(placeId, "provider2")));
+        when(userRepository.findById(providerId)).thenReturn(java.util.Optional.of(provider(List.of())));
+
+        mockMvc.perform(delete("/api/services/" + serviceId)).andExpect(status().isForbidden());
+        org.mockito.Mockito.verify(serviceService, org.mockito.Mockito.never()).deleteService(anyString());
+    }
+
+    @Test
+    @WithMockUser(username = adminId, roles = {"ADMIN"})
+    void adminSeesProviderCreatedServicesWithCreatorAndPlace() throws Exception {
+        Place p = place(placeId, providerId);
+        when(placeService.getPlacesByAdminId(adminId)).thenReturn(List.of(p));
+        Service byProvider = createTestService();
+        byProvider.setCreatedBy(providerId);
+        byProvider.setCreatedByRole("PROVIDER");
+        byProvider.setAdminId(adminId);
+        Service legacy = createTestService();
+        legacy.setId("legacy");
+        when(serviceService.getServicesByPlaceIds(List.of(placeId))).thenReturn(List.of(byProvider, legacy));
+        User admin = new User();
+        admin.setId(adminId);
+        admin.setName("Alex Admin");
+        when(userRepository.findAllById(any())).thenReturn(List.of(provider(List.of()), admin));
+
+        mockMvc.perform(get("/api/services/admin/my-services"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(2))
+                .andExpect(jsonPath("$[0].createdByRole").value("PROVIDER"))
+                .andExpect(jsonPath("$[0].createdByName").value("Priya Provider"))
+                .andExpect(jsonPath("$[0].placeName").value("Place " + placeId))
+                .andExpect(jsonPath("$[1].createdByRole").value("ADMIN"))
+                .andExpect(jsonPath("$[1].createdBy").value(adminId))
+                .andExpect(jsonPath("$[1].createdByName").value("Alex Admin"));
+    }
+
+    @Test
+    @WithMockUser(username = providerId, roles = {"PROVIDER"})
+    void providerCannotUseAdminServiceList() throws Exception {
+        mockMvc.perform(get("/api/services/admin/my-services")).andExpect(status().isForbidden());
     }
 }

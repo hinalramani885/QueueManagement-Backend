@@ -297,4 +297,54 @@ class PlaceServiceTest {
         assertTrue(result.isEmpty());
         verifyNoInteractions(placeRepository);
     }
+
+    // ===== ownership (provider catalog) =====
+
+    @Test
+    void createPlaceRecordsCreatorAndAudit() {
+        PlaceDTO dto = new PlaceDTO();
+        dto.setName("Provider Clinic");
+        dto.setType("CLINIC");
+        dto.setAddress("1 Side St");
+        dto.setLocation(new double[]{72.5, 23.0});
+        dto.setAdminId("admin1");
+        dto.setIsActive(true);
+        when(placeRepository.save(any(Place.class))).thenAnswer(inv -> {
+            Place p = inv.getArgument(0);
+            p.setId("newPlace");
+            return p;
+        });
+
+        Place saved = placeService.createPlace(dto, "prov1", "PROVIDER");
+
+        assertEquals("admin1", saved.getAdminId());
+        assertEquals("prov1", saved.getCreatedBy());
+        assertEquals("PROVIDER", saved.getCreatedByRole());
+        verify(auditLogService).logEvent(eq("PLACE_CREATED"), anyString(),
+                argThat(d -> "prov1".equals(d.get("createdBy")) && "PROVIDER".equals(d.get("createdByRole"))));
+    }
+
+    @Test
+    void adminCreatePlaceRecordsAdminAsCreator() {
+        PlaceDTO dto = new PlaceDTO();
+        dto.setName("HQ");
+        dto.setType("OFFICE");
+        dto.setAddress("Main St");
+        dto.setAdminId("admin1");
+        dto.setIsActive(true);
+        when(placeRepository.save(any(Place.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        Place saved = placeService.createPlace(dto);
+
+        assertEquals("admin1", saved.getCreatedBy());
+        assertEquals("ADMIN", saved.getCreatedByRole());
+    }
+
+    @Test
+    void ownershipCheckIsNullSafe() {
+        Place legacy = new Place();
+        legacy.setId("p1");
+        when(placeRepository.findById("p1")).thenReturn(Optional.of(legacy)); // no adminId
+        assertFalse(placeService.isPlaceOwnedByAdmin("p1", "admin1"));
+    }
 }

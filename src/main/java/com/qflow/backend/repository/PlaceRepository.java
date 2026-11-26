@@ -9,6 +9,7 @@ import java.util.List;
 
 public interface PlaceRepository extends MongoRepository<Place, String> {
     List<Place> findByAdminId(String adminId);
+    List<Place> findByCreatedBy(String createdBy);
     List<Place> findByType(String type);
 
     @Query("{ 'location' : { $near : { $geometry : { type : 'Point', coordinates: [?0, ?1] }, $maxDistance: ?2 } } }")
