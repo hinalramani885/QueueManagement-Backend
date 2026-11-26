@@ -1,9 +1,11 @@
 package com.qflow.backend.service;
 
 import jakarta.mail.MessagingException;
+import jakarta.mail.internet.InternetAddress;
 import jakarta.mail.internet.MimeMessage;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
@@ -22,10 +24,39 @@ public class EmailService {
 
     private final JavaMailSender mailSender;
 
+    /** The one QFlow address users contact: shown in every e-mail and used as Reply-To. */
+    @Value("${app.support-email:qflowapplication@gmail.com}")
+    private String supportEmail;
+
+    /** Account the SMTP server authenticates as (Gmail only lets this account be the sender). */
+    @Value("${spring.mail.username:}")
+    private String mailUsername;
+
+    /**
+     * Applies the QFlow sender details to an e-mail: shown as "QFlow", replies go to the support address.
+     * The From address is the SMTP account (Gmail rewrites any other From); set MAIL_USERNAME to the
+     * support address to send from it as well.
+     */
+    void applyQFlowSender(MimeMessageHelper helper) throws MessagingException {
+        String from = mailUsername != null && !mailUsername.isBlank() ? mailUsername : supportEmail;
+        try {
+            helper.setFrom(new InternetAddress(from, "QFlow"));
+            helper.setReplyTo(new InternetAddress(supportEmail, "QFlow Support"));
+        } catch (java.io.UnsupportedEncodingException e) {
+            helper.setFrom(from);
+            helper.setReplyTo(supportEmail);
+        }
+    }
+
+    public String getSupportEmail() {
+        return supportEmail;
+    }
+
     public void sendOtpEmail(String toEmail, String otp) {
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            applyQFlowSender(helper);
 
             helper.setTo(toEmail);
             helper.setSubject("QFlow | OTP for Password Reset");
@@ -49,7 +80,8 @@ public class EmailService {
     private String loadHtmlTemplate(String path) throws Exception {
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(
                 new ClassPathResource(path).getInputStream(), StandardCharsets.UTF_8))) {
-            return reader.lines().collect(Collectors.joining("\n"));
+            // Every template can show the support address with {{SUPPORT_EMAIL}}
+            return reader.lines().collect(Collectors.joining("\n")).replace("{{SUPPORT_EMAIL}}", supportEmail);
         }
     }
 
@@ -57,6 +89,7 @@ public class EmailService {
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            applyQFlowSender(helper);
 
             helper.setTo(toEmail);
             helper.setSubject("QFlow – Your turn is coming up!");
@@ -82,6 +115,7 @@ public class EmailService {
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            applyQFlowSender(helper);
 
             helper.setTo(toEmail);
             helper.setSubject("QFlow Alert – Queue threshold exceeded");
@@ -111,6 +145,7 @@ public class EmailService {
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            applyQFlowSender(helper);
 
             helper.setTo(toEmail);
             helper.setSubject("QFlow – Verify Your Email");
@@ -130,6 +165,7 @@ public class EmailService {
         try {
             MimeMessage message = mailSender.createMimeMessage();
             MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            applyQFlowSender(helper);
 
             helper.setTo(toEmail);
             helper.setSubject("QFlow – Password Reset Requested by Admin");
