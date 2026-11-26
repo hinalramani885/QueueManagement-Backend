@@ -95,7 +95,7 @@ class UserControllerTest {
                 .andExpect(content().string("User not found"));
     }
 
-    // ==================== CHANGE PASSWORD ====================
+    // ==================== CHANGE PASSWORD In the APP ====================
 
     @Test
     @WithMockUser(username = userId)
