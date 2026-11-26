@@ -181,6 +181,10 @@ public class SecurityConfig {
                                 "/api/queues/{queueId}"
                         ).permitAll()
                         .requestMatchers("/uploads/**").permitAll()
+                        // Information pages: everyone can read, only admins can change or delete
+                        .requestMatchers(HttpMethod.GET, "/api/content/**").permitAll()
+                        .requestMatchers(HttpMethod.PUT, "/api/content/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.DELETE, "/api/content/**").hasRole("ADMIN")
                         // User endpoints
                         .requestMatchers("/api/queues/*/add-token").hasRole("USER")
                         .requestMatchers(HttpMethod.GET, "/api/user/tokens").authenticated()
