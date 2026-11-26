@@ -404,17 +404,29 @@ class PlaceControllerTest {
 
     @Test
     @WithMockUser(username = providerId, roles = {"PROVIDER"})
-    void providerWithoutAdmin_CannotCreatePlace() throws Exception {
-        when(userRepository.findById(providerId)).thenReturn(java.util.Optional.of(provider(providerId, null, List.of())));
-        PlaceDTO request = PlaceDTO.fromEntity(testPlace);
-        request.setAdminId(null);
+    void independentProviderCreatesPlaceAndItIsLinkedToThem() throws Exception {
+        // Signed up via "Be a Provider": no admin and no place yet
+        User independent = provider(providerId, null, List.of());
+        when(userRepository.findById(providerId)).thenReturn(java.util.Optional.of(independent));
+        Place created = placeCreatedBy("firmPlace", providerId, "PROVIDER");
+        created.setAdminId(null);
+        when(placeService.createPlace(any(PlaceDTO.class), eq(providerId), eq("PROVIDER"))).thenReturn(created);
+
+        PlaceDTO request = PlaceDTO.fromEntity(created);
+        request.setId(null);
 
         mockMvc.perform(post("/api/places")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
-                .andExpect(status().isBadRequest());
-        org.mockito.Mockito.verify(placeService, org.mockito.Mockito.never())
-                .createPlace(any(PlaceDTO.class), anyString(), anyString());
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value("firmPlace"))
+                .andExpect(jsonPath("$.createdBy").value(providerId));
+
+        org.mockito.Mockito.verify(placeService).createPlace(
+                org.mockito.ArgumentMatchers.argThat(dto -> dto.getAdminId() == null), eq(providerId), eq("PROVIDER"));
+        org.junit.jupiter.api.Assertions.assertEquals("firmPlace", independent.getPlaceId());
+        org.junit.jupiter.api.Assertions.assertEquals(List.of("firmPlace"), independent.getOwnedPlaceIds());
+        org.mockito.Mockito.verify(userRepository).save(independent);
     }
 
     @Test

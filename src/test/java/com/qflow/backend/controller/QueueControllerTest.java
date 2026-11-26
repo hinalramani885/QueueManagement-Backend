@@ -111,6 +111,24 @@ class QueueControllerTest {
                 .andExpect(status().isInternalServerError());
     }
 
+    @Test
+    @WithMockUser(username = providerId, roles = {"PROVIDER"})
+    void createNewQueue_PlaceNotOwnedByProvider_Forbidden() throws Exception {
+        CreateQueueRequest request = new CreateQueueRequest();
+        request.setServiceName("Test Queue");
+        request.setPlaceId("someoneElsesPlace");
+        request.setServiceId("service123");
+
+        when(queueService.createNewQueue(anyString(), anyString(), anyString(), anyString(),
+                any(), any(), any(), any(), any(), any()))
+                .thenThrow(new com.qflow.backend.exception.AccessDeniedException("Provider does not have access to this place"));
+
+        mockMvc.perform(post("/api/queues/create")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isForbidden());
+    }
+
     // ==================== GET QUEUES BY PROVIDER ====================
 
     @Test

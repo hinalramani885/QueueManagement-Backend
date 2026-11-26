@@ -32,9 +32,11 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li><b>ADMIN</b> manages every place whose {@code adminId} is the admin, including places and services
  *       created by the admin's providers.</li>
- *   <li><b>PROVIDER</b> manages places they created or that are assigned to them ({@code managedPlaceIds}),
- *       and services they created or that belong to such a place. A provider's places are owned by the
- *       provider's admin, so they automatically appear in that admin's lists.</li>
+ *   <li><b>PROVIDER</b> signs up without a place and then creates their own. They manage places they created
+ *       ({@code createdBy}, linked to their account via {@code ownedPlaceIds}/{@code placeId}) or that an admin
+ *       assigned to them ({@code managedPlaceIds}), and services they created or that belong to such a place.
+ *       When the provider works for an admin, their places are also owned by that admin, so they appear in the
+ *       admin's lists; independent providers (no admin) own their places alone.</li>
  * </ul>
  */
 @Slf4j
@@ -90,7 +92,8 @@ public class CatalogAccessService {
      * The admin that owns everything a provider creates. Uses the provider's {@code adminId}; for older
      * provider accounts without one, falls back to the admin of their assigned place and stores that link.
      *
-     * @return the admin id, or empty when the provider cannot be linked to any admin
+     * @return the admin id, or empty for independent providers (self-signed-up, no admin) – their places
+     *         then have no owning admin and belong to the provider alone
      */
     public Optional<String> owningAdminIdForProvider(String providerId) {
         User provider = userRepository.findById(providerId).orElse(null);
@@ -120,18 +123,35 @@ public class CatalogAccessService {
     }
 
     /**
-     * Makes a place the provider just created show up in their "my places" and queue-creation lists. Providers
-     * with an empty {@code managedPlaceIds} already see every place of their admin, so the list is left alone
-     * for them (adding one entry would hide the admin's other places).
+     * Links a place the provider just created to the provider's account: it is added to {@code ownedPlaceIds},
+     * and becomes their main {@code placeId} when they have none yet (providers sign up without a place).
+     * {@code managedPlaceIds} (places assigned by an admin) is left alone: an empty list means "every place of
+     * my admin", and adding one entry would hide the admin's other places.
+     *
+     * @return true when the user document was changed
      */
-    public void assignCreatedPlaceToProvider(String providerId, String placeId) {
-        userRepository.findById(providerId).ifPresent(provider -> {
-            List<String> managed = provider.getManagedPlaceIds();
-            if (managed != null && !managed.isEmpty() && !managed.contains(placeId)) {
-                managed.add(placeId);
-                userRepository.save(provider);
-            }
-        });
+    public boolean linkCreatedPlaceToProvider(String providerId, String placeId) {
+        User provider = userRepository.findById(providerId).orElse(null);
+        if (provider == null || placeId == null) {
+            return false;
+        }
+        boolean changed = false;
+        if (provider.getOwnedPlaceIds() == null) {
+            provider.setOwnedPlaceIds(new ArrayList<>());
+        }
+        if (!provider.getOwnedPlaceIds().contains(placeId)) {
+            provider.getOwnedPlaceIds().add(placeId);
+            changed = true;
+        }
+        if (provider.getPlaceId() == null || provider.getPlaceId().isBlank()) {
+            provider.setPlaceId(placeId);
+            changed = true;
+        }
+        if (changed) {
+            userRepository.save(provider);
+            log.info("Linked place {} to provider {}", placeId, providerId);
+        }
+        return changed;
     }
 
     public boolean canManagePlace(Place place, Actor actor) {
@@ -139,30 +159,70 @@ public class CatalogAccessService {
             return false;
         }
         if (actor.isAdmin()) {
-            return Objects.equals(place.getAdminId(), actor.id());
+            return place.getAdminId() != null && place.getAdminId().equals(actor.id());
         }
         if (actor.isProvider()) {
-            return Objects.equals(place.getCreatedBy(), actor.id()) || assignedPlaceIds(actor.id()).contains(place.getId());
+            return Objects.equals(place.getCreatedBy(), actor.id()) || linkedPlaceIds(actor.id()).contains(place.getId());
         }
         return false;
     }
 
-    /** Places a provider may manage: the ones they created plus the ones assigned to them. */
+    /** Places a provider may manage: the ones they created/own plus the ones assigned to them. */
     public List<Place> manageablePlacesForProvider(String providerId) {
         Map<String, Place> byId = new LinkedHashMap<>();
         placeRepository.findByCreatedBy(providerId).forEach(p -> byId.put(p.getId(), p));
-        Set<String> assigned = assignedPlaceIds(providerId);
-        if (!assigned.isEmpty()) {
-            placeRepository.findAllById(assigned).forEach(p -> byId.putIfAbsent(p.getId(), p));
+        Set<String> linked = linkedPlaceIds(providerId);
+        linked.removeAll(byId.keySet());
+        if (!linked.isEmpty()) {
+            placeRepository.findAllById(linked).forEach(p -> byId.putIfAbsent(p.getId(), p));
         }
         return new ArrayList<>(byId.values());
     }
 
-    private Set<String> assignedPlaceIds(String providerId) {
-        return userRepository.findById(providerId)
-                .map(User::getManagedPlaceIds)
-                .<Set<String>>map(HashSet::new)
-                .orElseGet(HashSet::new);
+    /**
+     * Places a provider can run queues at: everything they manage, plus – for providers of an admin who have
+     * no specific assignment – every place of that admin (the original behaviour).
+     */
+    public List<Place> queuePlacesForProvider(String providerId) {
+        User provider = userRepository.findById(providerId).orElse(null);
+        if (provider == null) {
+            return List.of();
+        }
+        Map<String, Place> byId = new LinkedHashMap<>();
+        manageablePlacesForProvider(providerId).forEach(p -> byId.put(p.getId(), p));
+        boolean noAssignment = provider.getManagedPlaceIds() == null || provider.getManagedPlaceIds().isEmpty();
+        if (noAssignment && provider.getAdminId() != null && !provider.getAdminId().isBlank()) {
+            placeRepository.findByAdminId(provider.getAdminId()).forEach(p -> byId.putIfAbsent(p.getId(), p));
+        }
+        return new ArrayList<>(byId.values());
+    }
+
+    /** Whether a provider may run a queue at this place (same places as {@link #queuePlacesForProvider}). */
+    public boolean canRunQueueAt(User provider, Place place) {
+        if (provider == null || place == null) {
+            return false;
+        }
+        if (Objects.equals(place.getCreatedBy(), provider.getId())) {
+            return true;
+        }
+        if (provider.getOwnedPlaceIds() != null && provider.getOwnedPlaceIds().contains(place.getId())) {
+            return true;
+        }
+        if (provider.getManagedPlaceIds() != null && provider.getManagedPlaceIds().contains(place.getId())) {
+            return true;
+        }
+        boolean noAssignment = provider.getManagedPlaceIds() == null || provider.getManagedPlaceIds().isEmpty();
+        return noAssignment && place.getAdminId() != null && place.getAdminId().equals(provider.getAdminId());
+    }
+
+    /** Ids of places linked to the provider: owned (created by them) and assigned by an admin. */
+    private Set<String> linkedPlaceIds(String providerId) {
+        Set<String> ids = new HashSet<>();
+        userRepository.findById(providerId).ifPresent(u -> {
+            if (u.getOwnedPlaceIds() != null) ids.addAll(u.getOwnedPlaceIds());
+            if (u.getManagedPlaceIds() != null) ids.addAll(u.getManagedPlaceIds());
+        });
+        return ids;
     }
 
     // ---------------------------------------------------------------- services

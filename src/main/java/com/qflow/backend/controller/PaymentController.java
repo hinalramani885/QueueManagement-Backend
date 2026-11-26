@@ -106,9 +106,17 @@ public class PaymentController {
     ) throws RazorpayException {
         log.info("confirmProviderPayment: orderId={}, paymentId={}, providerEmail={}, tokenType={}", orderId, paymentId, providerEmail, tokenType);
         Payment payment = paymentService.confirmPayment(orderId, paymentId, signature, Role.PROVIDER, tokenType, providerEmail);
-        String adminId = payment.getCreatedByAdminId() != null
-                ? payment.getCreatedByAdminId()
-                : paymentService.getAdminIdFromOrder(orderId);
+        // The admin (if any) was stored on the order when it was created; independent providers have none.
+        // Older orders without that field fall back to the Razorpay order notes.
+        String adminId = payment.getCreatedByAdminId();
+        if (adminId == null) {
+            try {
+                adminId = paymentService.getAdminIdFromOrder(orderId);
+            } catch (RuntimeException e) {
+                // The payment is already verified: an independent provider simply has no admin
+                log.warn("Could not read admin from order notes | orderId={} | {}", orderId, e.getMessage());
+            }
+        }
         Token token = paymentService.generateToken(payment.getCreatedForEmail(), tokenType, Role.PROVIDER, true, adminId,
                 payment.getPlaceId());
         paymentService.recordIssuedTokens(payment, List.of(token.getTokenValue()));

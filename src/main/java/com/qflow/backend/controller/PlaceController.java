@@ -70,18 +70,16 @@ public class PlaceController {
             }
             placeDTO.setAdminId(actor.id());
         } else {
-            // The provider's admin owns the place, so it shows up in the admin's dashboard automatically
-            String owningAdminId = catalogAccessService.owningAdminIdForProvider(actor.id()).orElse(null);
-            if (owningAdminId == null) {
-                throw new IllegalArgumentException("Your provider account is not linked to an admin, so places cannot be created yet");
-            }
-            placeDTO.setAdminId(owningAdminId);
+            // A provider's place belongs to the provider. If the provider works for an admin, that admin also
+            // owns it (so it shows up in the admin's dashboard); independent providers have no admin.
+            placeDTO.setAdminId(catalogAccessService.owningAdminIdForProvider(actor.id()).orElse(null));
         }
 
         try {
             Place place = placeService.createPlace(placeDTO, actor.id(), actor.role().name());
             if (actor.isProvider()) {
-                catalogAccessService.assignCreatedPlaceToProvider(actor.id(), place.getId());
+                // Providers sign up without a place: link the place they create to their account
+                catalogAccessService.linkCreatedPlaceToProvider(actor.id(), place.getId());
             }
             log.info("Place created successfully with ID: {}", place.getId());
             return ResponseEntity.ok(PlaceDTO.fromEntity(place));

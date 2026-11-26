@@ -488,9 +488,34 @@ class PaymentServiceTest {
     }
 
     @Test
-    void createOrderForProviderRequiresPlaceOrAdmin() {
-        assertThrows(IllegalArgumentException.class, () ->
-                paymentService.createOrder("p@gmail.com", Role.PROVIDER, "1_MONTH", null, null, PayerDetails.EMPTY));
+    void createOrderForIndependentProviderNeedsNoPlaceOrAdmin() throws Exception {
+        // "Be a Provider": providers sign up without a place and add their own place afterwards
+        OrderClient mockOrderClient = mock(OrderClient.class);
+        Order mockOrder = mock(Order.class);
+        when(mockOrder.get("id")).thenReturn("order_indie");
+        when(mockOrderClient.create(any(JSONObject.class))).thenReturn(mockOrder);
+
+        try (MockedConstruction<RazorpayClient> mocked = mockConstruction(RazorpayClient.class,
+                (mock, context) -> mock.orders = mockOrderClient)) {
+            paymentService.createOrder("p@gmail.com", Role.PROVIDER, "1_MONTH", null, null, PayerDetails.EMPTY);
+
+            verify(paymentRepository).save(argThat(p ->
+                    p.getRole() == Role.PROVIDER && p.getCreatedByAdminId() == null && p.getPlaceId() == null));
+            verifyNoInteractions(placeRepository);
+        }
+    }
+
+    @Test
+    void getAdminIdFromOrderWithoutNotesReturnsNull() throws Exception {
+        OrderClient mockOrderClient = mock(OrderClient.class);
+        Order mockOrder = mock(Order.class);
+        when(mockOrder.get("notes")).thenReturn(new org.json.JSONArray()); // Razorpay sends [] when there are no notes
+        when(mockOrderClient.fetch("order_indie")).thenReturn(mockOrder);
+
+        try (MockedConstruction<RazorpayClient> mocked = mockConstruction(RazorpayClient.class,
+                (mock, context) -> mock.orders = mockOrderClient)) {
+            assertNull(paymentService.getAdminIdFromOrder("order_indie"));
+        }
     }
 
     @Test

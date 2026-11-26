@@ -261,7 +261,9 @@ class AuthServiceTest {
             assertEquals(Role.PROVIDER, user.getRole());
             assertFalse(user.getIsVerified());
             assertEquals("admin123", user.getAdminId());
-            assertTrue(user.getManagedPlaceIds().contains("place123"));
+            // Providers sign up without a place: a place ID sent with the form is ignored
+            assertNull(user.getPlaceId());
+            assertTrue(user.getManagedPlaceIds().isEmpty());
             return true;
         }));
         verify(otpRepository).deleteByEmail(registerRequest.getEmail());
@@ -444,14 +446,36 @@ class AuthServiceTest {
     }
 
     @Test
-    void registerProviderWithPlaceBoundTokenRejectsOtherPlace() {
+    void registerProviderIgnoresClientPlaceAndUsesTokenPlace() {
         registerRequest.setRole(Role.PROVIDER);
         registerRequest.setToken("PROVIDER_SELF");
-        registerRequest.setPlaceId("someOtherPlace");
+        registerRequest.setPlaceId("someOtherPlace"); // must not attach the provider to someone else's business
         when(userRepository.existsByEmail(registerRequest.getEmail())).thenReturn(false);
         when(tokenRepository.findByTokenValue("PROVIDER_SELF")).thenReturn(Optional.of(placeBoundProviderToken()));
+        when(passwordEncoder.encode(registerRequest.getPassword())).thenReturn("encodedPassword");
+        when(userRepository.save(any(User.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        assertThrows(InvalidTokenException.class, () -> authService.register(registerRequest));
-        verify(userRepository, never()).save(any(User.class));
+        authService.register(registerRequest);
+
+        verify(userRepository).save(argThat(user -> "placeFromToken".equals(user.getPlaceId())
+                && user.getManagedPlaceIds().equals(java.util.List.of("placeFromToken"))));
+    }
+
+    @Test
+    void registerIndependentProviderWithoutPlace() {
+        registerRequest.setRole(Role.PROVIDER);
+        registerRequest.setToken("PROVIDER_INDIE");
+        registerRequest.setPlaceId(null);
+        Token indie = Token.builder().tokenValue("PROVIDER_INDIE").role(Role.PROVIDER)
+                .createdForEmail(registerRequest.getEmail()).expiryDate(LocalDateTime.now().plusDays(30)).isUsed(false).build();
+        when(userRepository.existsByEmail(registerRequest.getEmail())).thenReturn(false);
+        when(tokenRepository.findByTokenValue("PROVIDER_INDIE")).thenReturn(Optional.of(indie));
+        when(passwordEncoder.encode(registerRequest.getPassword())).thenReturn("encodedPassword");
+        when(userRepository.save(any(User.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        authService.register(registerRequest);
+
+        verify(userRepository).save(argThat(user -> user.getRole() == Role.PROVIDER && user.getAdminId() == null
+                && user.getPlaceId() == null && user.getManagedPlaceIds().isEmpty()));
     }
 }
