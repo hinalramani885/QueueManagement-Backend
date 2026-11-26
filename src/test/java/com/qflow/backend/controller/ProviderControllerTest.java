@@ -6,6 +6,9 @@ import com.qflow.backend.model.Place;
 import com.qflow.backend.model.Service;
 import com.qflow.backend.model.User;
 import com.qflow.backend.repository.UserRepository;
+import com.qflow.backend.repository.ServiceRepository;
+import com.qflow.backend.repository.PlaceRepository;
+import com.qflow.backend.service.CatalogAccessService;
 import com.qflow.backend.service.PlaceService;
 import com.qflow.backend.service.ProviderAnalyticsService;
 import com.qflow.backend.service.ServiceService;
@@ -31,7 +34,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @WebMvcTest(controllers = ProviderController.class,
         properties = "spring.autoconfigure.exclude=org.springframework.boot.data.redis.autoconfigure.DataRedisAutoConfiguration")
-@Import({RateLimitConfig.class, TestSecurityConfig.class})
+@Import({RateLimitConfig.class, TestSecurityConfig.class, CatalogAccessService.class})
 @AutoConfigureMockMvc
 class ProviderControllerTest {
 
@@ -49,6 +52,12 @@ class ProviderControllerTest {
 
     @MockitoBean
     private ProviderAnalyticsService providerAnalyticsService;
+
+    @MockitoBean
+    private PlaceRepository placeRepository;
+
+    @MockitoBean
+    private ServiceRepository serviceRepository;
 
     private final String providerId = "provider123";
     private final String adminId = "admin123";
@@ -98,7 +107,7 @@ class ProviderControllerTest {
 
         Place place1 = createPlace(placeId1, "Place 1");
         Place place2 = createPlace(placeId2, "Place 2");
-        when(placeService.getPlacesByIds(List.of(placeId1, placeId2))).thenReturn(List.of(place1, place2));
+        when(placeRepository.findAllById(any())).thenReturn(List.of(place1, place2));
 
         mockMvc.perform(get("/api/providers/my-places"))
                 .andExpect(status().isOk())
@@ -115,7 +124,7 @@ class ProviderControllerTest {
         when(userRepository.findById(providerId)).thenReturn(Optional.of(provider));
 
         Place place1 = createPlace(placeId1, "Place 1");
-        when(placeService.getPlacesByAdminId(adminId)).thenReturn(List.of(place1));
+        when(placeRepository.findByAdminId(adminId)).thenReturn(List.of(place1));
 
         mockMvc.perform(get("/api/providers/my-places"))
                 .andExpect(status().isOk())
@@ -140,6 +149,7 @@ class ProviderControllerTest {
         User provider = createProvider(List.of(placeId1, placeId2));
         when(userRepository.findById(providerId)).thenReturn(Optional.of(provider));
 
+        when(placeRepository.findAllById(any())).thenReturn(List.of(createPlace(placeId1, "Place 1"), createPlace(placeId2, "Place 2")));
         Service service1 = createService(serviceId1, placeId1, "Service 1");
         Service service2 = createService(serviceId2, placeId2, "Service 2");
         when(serviceService.getServicesByPlaceId(placeId1)).thenReturn(List.of(service1));
@@ -160,7 +170,7 @@ class ProviderControllerTest {
         when(userRepository.findById(providerId)).thenReturn(Optional.of(provider));
 
         Place place1 = createPlace(placeId1, "Place 1");
-        when(placeService.getPlacesByAdminId(adminId)).thenReturn(List.of(place1));
+        when(placeRepository.findByAdminId(adminId)).thenReturn(List.of(place1));
 
         Service service1 = createService(serviceId1, placeId1, "Service 1");
         when(serviceService.getServicesByPlaceId(placeId1)).thenReturn(List.of(service1));
@@ -227,5 +237,32 @@ class ProviderControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.dates[0]").value("2026-03-01"))
                 .andExpect(jsonPath("$.averages[1]").value(12.3));
+    }
+
+    // ==================== providers who signed up without a place ====================
+
+    @Test
+    @WithMockUser(username = providerId, roles = {"PROVIDER"})
+    void independentProviderSeesOnlyTheirOwnPlaceForQueues() throws Exception {
+        User independent = User.builder().id(providerId).name("Indie").email("indie@test.com").build(); // no admin, no place
+        when(userRepository.findById(providerId)).thenReturn(Optional.of(independent));
+        Place own = createPlace(placeId1, "My Salon");
+        own.setCreatedBy(providerId);
+        when(placeRepository.findByCreatedBy(providerId)).thenReturn(List.of(own));
+
+        mockMvc.perform(get("/api/providers/my-places"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(1))
+                .andExpect(jsonPath("$[0].name").value("My Salon"));
+        org.mockito.Mockito.verify(placeRepository, org.mockito.Mockito.never()).findByAdminId(any());
+    }
+
+    @Test
+    @WithMockUser(username = providerId, roles = {"PROVIDER"})
+    void newProviderWithoutPlaceGetsEmptyList() throws Exception {
+        when(userRepository.findById(providerId)).thenReturn(Optional.of(User.builder().id(providerId).build()));
+        mockMvc.perform(get("/api/providers/my-places"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.length()").value(0));
     }
 }

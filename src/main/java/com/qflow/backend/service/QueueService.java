@@ -28,6 +28,7 @@ public class QueueService {
     private final SimpMessagingTemplate messagingTemplate;
     private final UserRepository userRepository;
     private final PlaceService placeService;
+    private final CatalogAccessService catalogAccessService;
     private final ServiceService serviceService;
     private final FeedbackRepository feedbackRepository;
     private final ExportService exportService;
@@ -624,9 +625,8 @@ public class QueueService {
             throw new RuntimeException("Place not found");
         }
 
-        if (!(place.getAdminId() != null && place.getAdminId().equals(provider.getAdminId())) &&
-                (provider.getManagedPlaceIds() == null || !provider.getManagedPlaceIds().contains(placeId))) {
-            throw new RuntimeException("Provider does not have access to this place");
+        if (!catalogAccessService.canRunQueueAt(provider, place)) {
+            throw new com.qflow.backend.exception.AccessDeniedException("Provider does not have access to this place");
         }
 
         Service service = serviceService.getServiceById(serviceId);
@@ -671,9 +671,8 @@ public class QueueService {
             throw new RuntimeException("Place not found");
         }
 
-        if (!(place.getAdminId() != null && place.getAdminId().equals(provider.getAdminId())) &&
-                (provider.getManagedPlaceIds() == null || !provider.getManagedPlaceIds().contains(placeId))) {
-            throw new RuntimeException("Provider does not have access to this place");
+        if (!catalogAccessService.canRunQueueAt(provider, place)) {
+            throw new com.qflow.backend.exception.AccessDeniedException("Provider does not have access to this place");
         }
 
         Service service = serviceService.getServiceById(serviceId);

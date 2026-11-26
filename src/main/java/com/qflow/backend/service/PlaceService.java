@@ -89,8 +89,12 @@ public class PlaceService {
                 });
     }
 
-    @Cacheable(value = "placesByAdmin", key = "#adminId")
+    @Cacheable(value = "placesByAdmin", key = "#adminId", condition = "#adminId != null")
     public List<Place> getPlacesByAdminId(String adminId) {
+        if (adminId == null || adminId.isBlank()) {
+            // Independent providers have no admin; never match places that merely lack an adminId
+            return List.of();
+        }
         log.debug("Fetching places by admin ID: {}", adminId);
         List<Place> places = placeRepository.findByAdminId(adminId);
         log.info("Found {} places for admin {}", places.size(), adminId);

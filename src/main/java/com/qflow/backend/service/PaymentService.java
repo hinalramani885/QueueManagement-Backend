@@ -78,9 +78,9 @@ public class PaymentService {
                 }
                 adminId = place.getAdminId();
                 orderPlaceId = place.getId();
-            } else if (adminId == null || adminId.isBlank()) {
-                throw new IllegalArgumentException("Choose the place you work at");
             }
+            // Without a place or admin this is an independent provider ("Be a Provider" sign-up): they add
+            // their own place after registering.
         }
         log.info("Initiating order creation | email={}, role={}, tokenType={}", email, role, tokenType);
 
@@ -383,8 +383,9 @@ public class PaymentService {
         RazorpayClient razorpayClient = new RazorpayClient(RAZORPAY_KEY, RAZORPAY_SECRET);
         try {
             Order order = razorpayClient.orders.fetch(orderId);
-            JSONObject notes = order.get("notes");
-            return notes.getString("adminId");
+            Object notes = order.get("notes");
+            // Independent providers have no admin: Razorpay returns no notes (or an empty list) for their orders
+            return notes instanceof JSONObject json ? json.optString("adminId", null) : null;
         } catch (Exception e) {
             log.error("Failed to fetch order details for orderId={}", orderId, e);
             throw new RuntimeException("Failed to retrieve admin ID from order", e);

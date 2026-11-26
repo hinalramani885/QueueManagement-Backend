@@ -124,21 +124,76 @@ class CatalogAccessServiceTest {
     }
 
     @Test
-    void createdPlaceIsAssignedOnlyWhenProviderHasAnAssignedList() {
-        User withList = provider("admin1", List.of("assigned"));
-        when(userRepository.findById("prov1")).thenReturn(Optional.of(withList));
-        access.assignCreatedPlaceToProvider("prov1", "newPlace");
-        assertTrue(withList.getManagedPlaceIds().contains("newPlace"));
-        verify(userRepository).save(withList);
+    void createdPlaceIsLinkedToProviderWithoutAPlace() {
+        User newProvider = provider(null, List.of()); // signed up without a place
+        when(userRepository.findById("prov1")).thenReturn(Optional.of(newProvider));
+
+        assertTrue(access.linkCreatedPlaceToProvider("prov1", "firmPlace"));
+
+        assertEquals("firmPlace", newProvider.getPlaceId());
+        assertEquals(List.of("firmPlace"), newProvider.getOwnedPlaceIds());
+        assertTrue(newProvider.getManagedPlaceIds().isEmpty(), "assigned places stay untouched");
+        verify(userRepository).save(newProvider);
     }
 
     @Test
-    void createdPlaceNotAddedWhenProviderSeesAllAdminPlaces() {
-        User seesAll = provider("admin1", List.of());
-        when(userRepository.findById("prov1")).thenReturn(Optional.of(seesAll));
-        access.assignCreatedPlaceToProvider("prov1", "newPlace");
-        assertTrue(seesAll.getManagedPlaceIds().isEmpty());
-        verify(userRepository, never()).save(any());
+    void secondPlaceKeepsMainPlaceAndLinkIsIdempotent() {
+        User provider = provider("admin1", List.of());
+        provider.setPlaceId("first");
+        provider.setOwnedPlaceIds(new ArrayList<>(List.of("first")));
+        when(userRepository.findById("prov1")).thenReturn(Optional.of(provider));
+
+        assertTrue(access.linkCreatedPlaceToProvider("prov1", "second"));
+        assertEquals("first", provider.getPlaceId());
+        assertEquals(List.of("first", "second"), provider.getOwnedPlaceIds());
+
+        assertFalse(access.linkCreatedPlaceToProvider("prov1", "second"), "running again changes nothing");
+        verify(userRepository, times(1)).save(provider);
+    }
+
+    @Test
+    void providerManagesOwnedPlace() {
+        User provider = provider(null, List.of());
+        provider.setOwnedPlaceIds(new ArrayList<>(List.of("owned")));
+        when(userRepository.findById("prov1")).thenReturn(Optional.of(provider));
+        assertTrue(access.canManagePlace(place("owned", null, null), PROVIDER));
+    }
+
+    @Test
+    void independentProviderRunsQueuesOnlyAtOwnPlaces() {
+        User independent = provider(null, List.of());
+        independent.setOwnedPlaceIds(new ArrayList<>(List.of("own")));
+        assertTrue(access.canRunQueueAt(independent, place("own", null, "prov1")));
+        assertFalse(access.canRunQueueAt(independent, place("someoneElses", null, "prov2")),
+                "a place without an admin must not match a provider without an admin");
+    }
+
+    @Test
+    void adminProviderWithoutAssignmentStillRunsQueuesAtAdminPlaces() {
+        User adminProvider = provider("admin1", List.of());
+        assertTrue(access.canRunQueueAt(adminProvider, place("adminPlace", "admin1", "admin1")));
+        assertFalse(access.canRunQueueAt(adminProvider, place("otherAdmin", "admin2", "admin2")));
+    }
+
+    @Test
+    void queuePlacesCombineOwnAssignedAndAdminPlaces() {
+        User adminProvider = provider("admin1", List.of());
+        when(userRepository.findById("prov1")).thenReturn(Optional.of(adminProvider));
+        when(placeRepository.findByCreatedBy("prov1")).thenReturn(List.of(place("own", "admin1", "prov1")));
+        when(placeRepository.findByAdminId("admin1")).thenReturn(List.of(place("own", "admin1", "prov1"), place("hq", "admin1", "admin1")));
+
+        List<String> ids = access.queuePlacesForProvider("prov1").stream().map(Place::getId).toList();
+        assertEquals(List.of("own", "hq"), ids);
+    }
+
+    @Test
+    void independentProviderQueuePlacesAreOnlyTheirOwn() {
+        User independent = provider(null, List.of());
+        when(userRepository.findById("prov1")).thenReturn(Optional.of(independent));
+        when(placeRepository.findByCreatedBy("prov1")).thenReturn(List.of(place("own", null, "prov1")));
+
+        assertEquals(List.of("own"), access.queuePlacesForProvider("prov1").stream().map(Place::getId).toList());
+        verify(placeRepository, never()).findByAdminId(any());
     }
 
     @Test

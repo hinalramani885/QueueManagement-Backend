@@ -4,6 +4,7 @@ import com.qflow.backend.dto.PlaceDTO;
 import com.qflow.backend.dto.ServiceDTO;
 import com.qflow.backend.model.User;
 import com.qflow.backend.repository.UserRepository;
+import com.qflow.backend.service.CatalogAccessService;
 import com.qflow.backend.service.PlaceService;
 import com.qflow.backend.service.ProviderAnalyticsService;
 import com.qflow.backend.service.ServiceService;
@@ -37,10 +38,11 @@ public class ProviderController {
     private final PlaceService placeService;
     private final ServiceService serviceService;
     private final ProviderAnalyticsService providerAnalyticsService;
+    private final CatalogAccessService catalogAccessService;
 
     @GetMapping("/my-places")
     @ProviderOnly
-    @Operation(summary = "Get my managed places", description = "Returns the places that the authenticated provider manages. If no specific managed places are assigned, returns all places under the admin.")
+    @Operation(summary = "Get my managed places", description = "Returns the places the authenticated provider can run queues at: places they created, places assigned to them and, when no places are assigned, all places of their admin.")
     @ApiResponse(responseCode = "200", description = "List of places",
             content = @Content(schema = @Schema(implementation = PlaceDTO.class)))
     @ApiResponse(responseCode = "404", description = "Provider not found")
@@ -53,18 +55,10 @@ public class ProviderController {
                     return new RuntimeException("Provider not found");
                 });
 
-        List<PlaceDTO> places;
-        if (provider.getManagedPlaceIds() != null && !provider.getManagedPlaceIds().isEmpty()) {
-            places = placeService.getPlacesByIds(provider.getManagedPlaceIds()).stream()
-                    .map(PlaceDTO::fromEntity)
-                    .collect(Collectors.toList());
-            log.debug("Found {} places from managedPlaceIds", places.size());
-        } else {
-            places = placeService.getPlacesByAdminId(provider.getAdminId()).stream()
-                    .map(PlaceDTO::fromEntity)
-                    .collect(Collectors.toList());
-            log.debug("Found {} places from admin ID", places.size());
-        }
+        // Places the provider created/owns, places assigned to them and – without an assignment – their admin's places
+        List<PlaceDTO> places = catalogAccessService.queuePlacesForProvider(provider.getId()).stream()
+                .map(PlaceDTO::fromEntity)
+                .collect(Collectors.toList());
 
         log.info("Returning {} places for provider {}", places.size(), providerId);
         return ResponseEntity.ok(places);
@@ -85,15 +79,9 @@ public class ProviderController {
                     return new RuntimeException("Provider not found");
                 });
 
-        List<String> placeIds;
-        if (provider.getManagedPlaceIds() != null && !provider.getManagedPlaceIds().isEmpty()) {
-            placeIds = provider.getManagedPlaceIds();
-            log.debug("Using managedPlaceIds: {}", placeIds);
-        } else {
-            placeIds = placeService.getPlacesByAdminId(provider.getAdminId())
-                    .stream().map(place -> place.getId()).collect(Collectors.toList());
-            log.debug("Using admin's places: {}", placeIds);
-        }
+        List<String> placeIds = catalogAccessService.queuePlacesForProvider(provider.getId()).stream()
+                .map(place -> place.getId())
+                .collect(Collectors.toList());
 
         List<ServiceDTO> services = placeIds.stream()
                 .flatMap(placeId -> serviceService.getServicesByPlaceId(placeId).stream())

@@ -50,6 +50,7 @@ public class QueueController {
     @Operation(summary = "Create a new queue", description = "Creates a new queue. Only provider or admin can create.")
     @ApiResponse(responseCode = "201", description = "Queue created",
             content = @Content(schema = @Schema(implementation = Queue.class)))
+    @ApiResponse(responseCode = "403", description = "Provider may not run queues at this place")
     @ApiResponse(responseCode = "500", description = "Internal server error")
     public ResponseEntity<Queue> createNewQueue(@Valid @RequestBody CreateQueueRequest request) {
         try {
@@ -71,6 +72,10 @@ public class QueueController {
             );
             log.debug("Created queue: {}", newQueue);
             return new ResponseEntity<>(newQueue, HttpStatus.CREATED);
+        } catch (com.qflow.backend.exception.AccessDeniedException e) {
+            // e.g. a provider opening a queue at a place that is not theirs
+            log.warn("Queue creation denied: {}", e.getMessage());
+            return new ResponseEntity<>(HttpStatus.FORBIDDEN);
         } catch (Exception e) {
             log.error("Error creating queue: {}", e.getMessage());
             return new ResponseEntity<>(HttpStatus.INTERNAL_SERVER_ERROR);

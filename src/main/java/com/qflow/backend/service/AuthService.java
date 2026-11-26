@@ -156,17 +156,16 @@ public class AuthService {
         // For PROVIDER, extract adminId and managed place
         String adminId = null;
         List<String> managedPlaceIds = new ArrayList<>();
-        String placeId = request.getPlaceId() != null && !request.getPlaceId().isBlank() ? request.getPlaceId().trim() : null;
+        // Providers sign up WITHOUT a place: they add their own place after registering, and it is linked to
+        // them then (CatalogAccessService#linkCreatedPlaceToProvider). A place ID sent by the client is ignored
+        // for providers, so nobody can attach themselves to someone else's business. Only tokens that were
+        // bound to a place at purchase time (older "Be a Provider" tokens) still carry one.
+        String placeId = request.getRole() == Role.PROVIDER ? null
+                : (request.getPlaceId() != null && !request.getPlaceId().isBlank() ? request.getPlaceId().trim() : null);
         if (request.getRole() == Role.PROVIDER && token != null) {
             adminId = token.getCreatedByAdminId();
-            // Self-purchased provider tokens are bound to the place chosen at checkout
             if (token.getPlaceId() != null) {
-                if (placeId != null && !placeId.equals(token.getPlaceId())) {
-                    throw new InvalidTokenException("This token was bought for a different place");
-                }
                 placeId = token.getPlaceId();
-            }
-            if (placeId != null) {
                 managedPlaceIds.add(placeId);
             }
         }
@@ -178,7 +177,7 @@ public class AuthService {
                 .password(passwordEncoder.encode(request.getPassword()))
                 .phoneNumber(request.getPhoneNumber())
                 .role(request.getRole())
-                .placeId(request.getRole() == Role.PROVIDER ? placeId : request.getPlaceId())
+                .placeId(placeId)
                 .profileImageUrl(null)
                 .isVerified(false)   // <-- changed: always false
                 .preferences(userPreferences)

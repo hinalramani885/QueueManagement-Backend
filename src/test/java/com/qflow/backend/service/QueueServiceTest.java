@@ -67,6 +67,9 @@ class QueueServiceTest {
     @Mock
     private NotificationPreferenceRepository notificationPreferenceRepository;
 
+    @Mock
+    private CatalogAccessService catalogAccessService;
+
     @InjectMocks
     private QueueService queueService;
 
@@ -715,6 +718,7 @@ class QueueServiceTest {
                         .build()
         ));
         when(placeService.getPlaceById(placeId)).thenReturn(place);
+        when(catalogAccessService.canRunQueueAt(any(User.class), eq(place))).thenReturn(true);
         when(serviceService.getServiceById(serviceId)).thenReturn(
                 Service.builder().placeId(placeId).build()
         );
@@ -888,5 +892,19 @@ class QueueServiceTest {
 
         assertNull(position.getPosition());
         assertNull(position.getTokenId());
+    }
+
+    @Test
+    void createNewQueueRejectedWhenProviderCannotRunQueuesAtPlace() {
+        Place place = new Place();
+        place.setId(placeId);
+        when(userRepository.findById(providerId)).thenReturn(Optional.of(User.builder().id(providerId).build()));
+        when(placeService.getPlaceById(placeId)).thenReturn(place);
+        when(catalogAccessService.canRunQueueAt(any(User.class), eq(place))).thenReturn(false);
+
+        RuntimeException e = assertThrows(RuntimeException.class, () -> queueService.createNewQueue(providerId, "Test", placeId, serviceId,
+                20, true, true, 5, false, true));
+        assertEquals("Provider does not have access to this place", e.getMessage());
+        verify(queueRepository, never()).save(any(Queue.class));
     }
 }
